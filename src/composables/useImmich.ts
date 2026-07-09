@@ -21,7 +21,6 @@ export function useImmich() {
   const pendingAssets = ref<ImmichAsset[]>([])
   const error = ref<string | null>(null)
   const SKIP_VIDEOS_BATCH_SIZE = 10
-  const SKIP_VIDEOS_MAX_ATTEMPTS = 5
   const CHRONO_PAGE_SIZE = 50
   const RANDOM_BATCH_SIZE = 5
   const RANDOM_MAX_ATTEMPTS = 20
@@ -29,9 +28,7 @@ export function useImmich() {
   const albumsCache = ref<ImmichAlbum[] | null>(null)
 
   const chronologicalQueue = ref<ImmichAsset[]>([])
-  const chronologicalSkip = ref(0)
-  const chronologicalPage = ref<number | null>(1)
-  const chronologicalPagingMode = ref<'skip' | 'page' | null>(null)
+  const chronologicalPage = ref<number>(1)
   const chronologicalHasMore = ref(true)
   const isFetchingChronological = ref(false)
 
@@ -51,9 +48,7 @@ export function useImmich() {
 
   function resetReviewFlow() {
     chronologicalQueue.value = []
-    chronologicalSkip.value = 0
     chronologicalPage.value = 1
-    chronologicalPagingMode.value = null
     chronologicalHasMore.value = true
     nextAsset.value = null
     pendingAssets.value = []
@@ -130,10 +125,17 @@ export function useImmich() {
   // Fetch a random asset
   async function fetchRandomAsset(): Promise<ImmichAsset | null> {
     try {
-      const attempts = uiStore.skipVideos ? SKIP_VIDEOS_MAX_ATTEMPTS : RANDOM_MAX_ATTEMPTS
-      for (let attempt = 0; attempt < attempts; attempt++) {
-        const count = uiStore.skipVideos ? SKIP_VIDEOS_BATCH_SIZE : RANDOM_BATCH_SIZE
-        const assets = await apiRequest<ImmichAsset[]>(`/assets/random?count=${count}`)
+      const size = uiStore.skipVideos ? SKIP_VIDEOS_BATCH_SIZE : RANDOM_BATCH_SIZE
+      const body: { size: number; type?: 'IMAGE' } = { size }
+      if (uiStore.skipVideos) {
+        body.type = 'IMAGE'
+      }
+
+      for (let attempt = 0; attempt < RANDOM_MAX_ATTEMPTS; attempt++) {
+        const assets = await apiRequest<ImmichAsset[]>('/search/random', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        })
         if (!assets || assets.length === 0) {
           continue
         }
@@ -142,9 +144,6 @@ export function useImmich() {
         if (candidate) return candidate
       }
 
-      if (uiStore.skipVideos) {
-        throw new Error('No unreviewed photos found after skipping videos.')
-      }
       throw new Error('No unreviewed assets found. Clear the reviewed cache to start over.')
     } catch (e) {
       console.error('Failed to fetch random asset:', e)
@@ -152,82 +151,26 @@ export function useImmich() {
     }
   }
 
-  async function fetchChronologicalBatch(): Promise<{ items: ImmichAsset[]; hasMore: boolean; nextPage: number | null }> {
+  async function fetchChronologicalBatch(): Promise<{ items: ImmichAsset[]; hasMore: boolean }> {
     const order = preferencesStore.reviewOrder === 'chronological-desc' ? 'desc' : 'asc'
-    const usePagePagination = chronologicalPagingMode.value !== 'skip'
     const body: MetadataSearchRequest = {
       order,
-      assetType: ['IMAGE', 'VIDEO'],
+      page: chronologicalPage.value,
+      size: CHRONO_PAGE_SIZE,
     }
-    if (usePagePagination && chronologicalPage.value !== null) {
-      body.page = chronologicalPage.value
-      body.size = CHRONO_PAGE_SIZE
-    } else {
-      body.take = CHRONO_PAGE_SIZE
-      body.skip = chronologicalSkip.value
+    if (uiStore.skipVideos) {
+      body.type = 'IMAGE'
     }
 
-    let response: MetadataSearchResponse | ImmichAsset[]
-    try {
-      response = await apiRequest<MetadataSearchResponse | ImmichAsset[]>('/search/metadata', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
-    } catch (e) {
-      if (!usePagePagination || chronologicalPagingMode.value === 'skip') {
-        throw e
-      }
+    const response = await apiRequest<MetadataSearchResponse>('/search/metadata', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
 
-      chronologicalPagingMode.value = 'skip'
-      chronologicalPage.value = null
-      const fallbackBody: MetadataSearchRequest = {
-        order,
-        assetType: ['IMAGE', 'VIDEO'],
-        take: CHRONO_PAGE_SIZE,
-        skip: chronologicalSkip.value,
-      }
-      response = await apiRequest<MetadataSearchResponse | ImmichAsset[]>('/search/metadata', {
-        method: 'POST',
-        body: JSON.stringify(fallbackBody),
-      })
-    }
+    const items = response?.assets?.items ?? []
+    const hasMore = response?.assets?.nextPage != null
 
-    if (chronologicalPagingMode.value === null) {
-      if (Array.isArray(response)) {
-        chronologicalPagingMode.value = 'skip'
-        chronologicalPage.value = null
-      } else if (response?.nextPage !== undefined || response?.hasNextPage !== undefined) {
-        chronologicalPagingMode.value = 'page'
-      } else if (usePagePagination) {
-        chronologicalPagingMode.value = 'page'
-      } else {
-        chronologicalPagingMode.value = 'skip'
-        chronologicalPage.value = null
-      }
-    }
-
-    const items = Array.isArray(response)
-      ? response
-      : response?.assets?.items ?? response?.items ?? []
-
-    let hasMore = items.length === CHRONO_PAGE_SIZE
-    let nextPage: number | null = null
-
-    if (!Array.isArray(response)) {
-      if (typeof response.hasNextPage === 'boolean') {
-        hasMore = response.hasNextPage
-      } else if (response?.nextPage !== undefined && response?.nextPage !== null) {
-        hasMore = true
-        const parsedNext = Number(response.nextPage)
-        nextPage = Number.isNaN(parsedNext) ? null : parsedNext
-      } else if (typeof response.assets?.total === 'number' && typeof response.assets?.count === 'number') {
-        if (response.assets.total > response.assets.count) {
-          hasMore = true
-        }
-      }
-    }
-
-    return { items, hasMore, nextPage }
+    return { items, hasMore }
   }
 
   async function fetchNextChronologicalAsset(): Promise<ImmichAsset | null> {
@@ -248,13 +191,8 @@ export function useImmich() {
 
     try {
       const batch = await fetchChronologicalBatch()
-      if (chronologicalPagingMode.value === 'skip') {
-        chronologicalSkip.value += batch.items.length
-      }
       chronologicalHasMore.value = batch.hasMore
-      if (batch.nextPage !== null && !Number.isNaN(batch.nextPage)) {
-        chronologicalPage.value = batch.nextPage
-      } else if (chronologicalPage.value !== null && batch.hasMore) {
+      if (batch.hasMore) {
         chronologicalPage.value += 1
       }
 
@@ -394,7 +332,7 @@ export function useImmich() {
     // Fetch owned + shared albums
     const [ownedAlbums, sharedAlbums] = await Promise.all([
       apiRequest<ImmichAlbum[]>('/albums'),
-      apiRequest<ImmichAlbum[]>('/albums?shared=true'),
+      apiRequest<ImmichAlbum[]>('/albums?isShared=true'),
     ])
 
     // Merge & deduplicate (by id)

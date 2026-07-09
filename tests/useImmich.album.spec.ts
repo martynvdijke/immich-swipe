@@ -9,9 +9,7 @@ import type { ImmichAsset } from '@/types/immich'
 describe('useImmich album flow', () => {
   const dummyAsset: ImmichAsset = {
     id: 'asset-1',
-    deviceAssetId: 'da-1',
     ownerId: 'owner-1',
-    deviceId: 'device-1',
     type: 'IMAGE',
     originalPath: '/tmp/file.jpg',
     originalFileName: 'file.jpg',
@@ -35,7 +33,7 @@ describe('useImmich album flow', () => {
         return new Response('{}', { status: 200 })
       }
 
-      if (url.includes('/assets/random')) {
+      if (url.includes('/search/random')) {
         return new Response(JSON.stringify([dummyAsset]), { status: 200 })
       }
 

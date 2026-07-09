@@ -1,8 +1,6 @@
 export interface ImmichAsset {
   id: string
-  deviceAssetId: string
   ownerId: string
-  deviceId: string
   type: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'OTHER'
   originalPath: string
   originalFileName: string
@@ -17,7 +15,14 @@ export interface ImmichAsset {
   isTrashed: boolean
   isOffline: boolean
   hasMetadata: boolean
-  duration?: string
+  isEdited?: boolean
+  duration?: number | null
+  checksum?: string
+  visibility?: string
+  stack?: unknown
+  people?: unknown[]
+  tags?: unknown[]
+  duplicateId?: string
   exifInfo?: {
     city?: string
     country?: string
@@ -68,22 +73,17 @@ export interface AddAssetsToAlbumRequest {
 }
 
 export interface MetadataSearchRequest {
-  take?: number
-  skip?: number
   page?: number
   size?: number
   order?: 'asc' | 'desc'
-  assetType?: ('IMAGE' | 'VIDEO')[]
+  type?: 'IMAGE' | 'VIDEO'
 }
 
 export interface MetadataSearchResponse {
-  items?: ImmichAsset[]
-  hasNextPage?: boolean
-  count?: number
-  nextPage?: string | number | null
   assets?: {
     total?: number
     count?: number
     items: ImmichAsset[]
+    nextPage?: string | null
   }
 }
