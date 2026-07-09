@@ -26,14 +26,25 @@ describe('useImmich album flow', () => {
 
   beforeEach(() => {
     setActivePinia(createPinia())
+    // Mock auth as logged in with session
+    const auth = useAuthStore()
+    auth.sessionToken = 'test-token'
+    auth.currentUserName = 'Alice'
+    auth.immichServerUrl = 'http://immich.example.com'
+
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, ..._rest: unknown[]) => {
       const url = typeof input === 'string' ? input : input.toString()
 
-      if (url.includes('/albums/')) {
+      // Mock auth config endpoint
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [], defaultServerUrl: null }), { status: 200 })
+      }
+
+      if (url.includes('/api/albums/')) {
         return new Response('{}', { status: 200 })
       }
 
-      if (url.includes('/search/random')) {
+      if (url.includes('/api/search/random')) {
         return new Response(JSON.stringify([dummyAsset]), { status: 200 })
       }
 
@@ -50,8 +61,6 @@ describe('useImmich album flow', () => {
   })
 
   it('adds current asset to album and counts as kept', async () => {
-    const auth = useAuthStore()
-    auth.setConfig('http://immich.example.com', 'api-key', 'Alice')
     const uiStore = useUiStore()
 
     const immich = useImmich()
@@ -62,7 +71,7 @@ describe('useImmich album flow', () => {
     expect(uiStore.keptCount).toBe(1)
     const fetchMock = fetch as unknown as Mock
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining('/albums/album-1/assets'),
+      expect.stringContaining('/api/albums/album-1/assets'),
       expect.objectContaining({ method: 'PUT' })
     )
   })

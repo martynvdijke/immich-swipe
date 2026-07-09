@@ -2,26 +2,19 @@
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
-import { useImmich } from '@/composables/useImmich'
-import type { EnvUser } from '@/types/immich'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
-const { testConnection } = useImmich()
 
-async function selectUser(user: EnvUser) {
-  authStore.selectEnvUser(user)
-  
-  // Test connection
-  const success = await testConnection()
+async function selectUser(userName: string) {
+  const success = await authStore.loginWithUser(userName)
   
   if (success) {
-    uiStore.toast(`Welcome, ${user.name}!`, 'success')
+    uiStore.toast(`Welcome, ${userName}!`, 'success')
     router.push('/')
   } else {
     uiStore.toast('Connection failed. Please check the configuration.', 'error')
-    authStore.clearConfig()
   }
 }
 </script>
@@ -42,9 +35,9 @@ async function selectUser(user: EnvUser) {
       <!-- User buttons -->
       <div class="space-y-4">
         <button
-          v-for="user in authStore.envUsers"
-          :key="user.name"
-          @click="selectUser(user)"
+          v-for="name in authStore.envUsers"
+          :key="name"
+          @click="selectUser(name)"
           class="w-full py-4 px-6 rounded-xl font-medium text-lg transition-all transform hover:scale-102 active:scale-98 shadow-lg flex items-center justify-center gap-3"
           :class="uiStore.isDarkMode
             ? 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white'
@@ -54,7 +47,7 @@ async function selectUser(user: EnvUser) {
           <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
           </svg>
-          {{ user.name }}
+          {{ name }}
         </button>
       </div>
 

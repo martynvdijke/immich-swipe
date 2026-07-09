@@ -68,7 +68,7 @@ export const useUiStore = defineStore('ui', () => {
   const deletedCount = ref<number>(0)
   const statsInitialized = ref(false)
   const statsStorageKey = computed(() => {
-    const server = authStore.serverUrl || 'unknown-server'
+    const server = authStore.immichServerUrl || 'unknown-server'
     const user = authStore.currentUserName || 'default-user'
     return `immich-swipe-stats:${server}:${user}`
   })

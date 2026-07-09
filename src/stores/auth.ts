@@ -1,177 +1,129 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ImmichConfig, EnvUser, EnvConfig } from '@/types/immich'
 
-const STORAGE_KEY = 'immich-swipe-config'
+const STORAGE_KEY = 'immich-swipe-session'
 
-// Parse .env at module load time
-function parseEnvConfig(): EnvConfig | null {
-  const serverUrl = import.meta.env.VITE_SERVER_URL
-
-  // Debug
-  console.log('[Auth] Parsing env config...')
-  console.log('[Auth] VITE_SERVER_URL:', serverUrl)
-  
-  if (!serverUrl) {
-    console.log('[Auth] No VITE_SERVER_URL found, skipping env config')
-    return null
-  }
-
-  const users: EnvUser[] = []
-  
-  // Parse users from .env
-  let i = 1
-  while (true) {
-    const name = import.meta.env[`VITE_USER_${i}_NAME`]
-    const apiKey = import.meta.env[`VITE_USER_${i}_API_KEY`]
-    
-    if (!name || !apiKey) break
-    
-    users.push({ name, apiKey })
-    i++
-  }
-
-  if (users.length === 0) {
-    console.log('[Auth] No users found in env config')
-    return null
-  }
-
-  console.log(`[Auth] Found ${users.length} users:`, users.map(u => u.name))
-  return { serverUrl, users }
-}
-
-const envConfig = parseEnvConfig()
+export type LoginMethod = 'env-user' | 'manual'
 
 export const useAuthStore = defineStore('auth', () => {
-  const serverUrl = ref<string>('')
-  const apiKey = ref<string>('')
+  const sessionToken = ref<string | null>(null)
   const currentUserName = ref<string>('')
-  const hasStoredConfig = ref<boolean>(false)
-  const proxyBaseUrl = '/api'
+  const immichServerUrl = ref<string>('')
+  const envUsers = ref<string[]>([])
+  const defaultServerUrl = ref<string | null>(null)
 
-  // .env state
-  const hasEnvConfig = computed(() => envConfig !== null && envConfig.users.length > 0)
-  const envUsers = computed(() => envConfig?.users || [])
-  const needsUserSelection = computed(() => hasEnvConfig.value && envConfig!.users.length > 1 && !isLoggedIn.value)
-  const hasSingleEnvUser = computed(() => hasEnvConfig.value && envConfig!.users.length === 1)
+  const isLoggedIn = computed(() => sessionToken.value !== null)
 
-  function readStoredConfig(): ImmichConfig | null {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) {
-      try {
-        const config: ImmichConfig = JSON.parse(stored)
-        return {
-          serverUrl: config.serverUrl || '',
-          apiKey: config.apiKey || '',
-        }
-      } catch {
-        console.error('Failed to parse stored config')
+  const authHeader = computed(() => {
+    if (!sessionToken.value) return {} as Record<string, string>
+    return { 'Authorization': `Bearer ${sessionToken.value}` }
+  })
+
+  function init() {
+    // Load session from sessionStorage
+    try {
+      const stored = sessionStorage.getItem(STORAGE_KEY)
+      if (stored) {
+        const data = JSON.parse(stored)
+        sessionToken.value = data.token ?? null
+        currentUserName.value = data.userName ?? ''
+        immichServerUrl.value = data.serverUrl ?? ''
       }
+    } catch {
+      sessionStorage.removeItem(STORAGE_KEY)
     }
-    return null
+
+    // Fetch backend config for env-configured users
+    fetchConfig()
   }
 
-  // Load from localStorage on init or when requested
-  function loadConfig() {
-    const config = readStoredConfig()
-    if (config) {
-      serverUrl.value = config.serverUrl
-      apiKey.value = config.apiKey
-      hasStoredConfig.value = true
-    } else {
-      serverUrl.value = ''
-      apiKey.value = ''
-      hasStoredConfig.value = false
+  async function fetchConfig() {
+    try {
+      const res = await fetch('/api/auth/config')
+      if (res.ok) {
+        const data = await res.json()
+        envUsers.value = data.users || []
+        defaultServerUrl.value = data.defaultServerUrl || null
+      }
+    } catch {
+      // Backend not available yet
     }
   }
 
-  // Save to localStorage
-  function saveConfig() {
-    const config: ImmichConfig = {
-      serverUrl: serverUrl.value,
-      apiKey: apiKey.value,
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config))
-    hasStoredConfig.value = true
-  }
-
-  // Set config
-  function setConfig(url: string, key: string, userName: string = '') {
-    // Normalize URL - remove trailing slash
-    serverUrl.value = url.replace(/\/+$/, '')
-    apiKey.value = key
-    currentUserName.value = userName
-    saveConfig()
-  }
-
-  // Get user from .env
-  function selectEnvUser(user: EnvUser) {
-    if (!envConfig) return
-    setConfig(envConfig.serverUrl, user.apiKey, user.name)
-  }
-
-  // Auto-login if single .env user
-  function autoLoginSingleUser() {
-    if (hasSingleEnvUser.value && envConfig) {
-      const user = envConfig.users[0]
-      setConfig(envConfig.serverUrl, user.apiKey, user.name)
+  async function loginWithUser(userName: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userName }),
+      })
+      if (!res.ok) return false
+      const data = await res.json()
+      sessionToken.value = data.token
+      currentUserName.value = data.userName || userName
+      immichServerUrl.value = data.serverUrl || ''
+      saveSession()
       return true
+    } catch {
+      return false
     }
-    return false
   }
 
-  // Clear config (logout)
-  function clearConfig() {
-    serverUrl.value = ''
-    apiKey.value = ''
+  async function loginManual(apiKey: string, serverUrl: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, serverUrl }),
+      })
+      if (!res.ok) return false
+      const data = await res.json()
+      sessionToken.value = data.token
+      currentUserName.value = data.userName || 'manual'
+      immichServerUrl.value = serverUrl
+      saveSession()
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  function logout() {
+    // Attempt backend logout (best-effort)
+    if (sessionToken.value) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${sessionToken.value}` },
+      }).catch(() => {})
+    }
+    sessionToken.value = null
     currentUserName.value = ''
-    localStorage.removeItem(STORAGE_KEY)
-    hasStoredConfig.value = false
+    immichServerUrl.value = ''
+    sessionStorage.removeItem(STORAGE_KEY)
   }
 
-  function getStoredConfig(): ImmichConfig | null {
-    return readStoredConfig()
+  function saveSession() {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+      token: sessionToken.value,
+      userName: currentUserName.value,
+      serverUrl: immichServerUrl.value,
+    }))
   }
 
-  // Check if logged in
-  const isLoggedIn = computed(() => {
-    return serverUrl.value.length > 0 && apiKey.value.length > 0
-  })
-
-  // Immich server base URL without /api suffix
-  const immichBaseUrl = computed(() => {
-    if (!serverUrl.value) return ''
-    return serverUrl.value.replace(/\/api\/?$/, '')
-  })
-
-  // Base URL for direct Immich API calls (always ends with /api)
-  const apiBaseUrl = computed(() => {
-    if (!serverUrl.value) return ''
-    const normalized = serverUrl.value.replace(/\/+$/, '')
-    return normalized.endsWith('/api') ? normalized : `${normalized}/api`
-  })
-
-  // Initialize
-  loadConfig()
+  // Initialize on store creation
+  init()
 
   return {
-    serverUrl,
-    apiKey,
+    sessionToken,
     currentUserName,
-    isLoggedIn,
-    hasStoredConfig,
-    immichBaseUrl,
-    apiBaseUrl,
-    proxyBaseUrl,
-    hasEnvConfig,
+    immichServerUrl,
     envUsers,
-    needsUserSelection,
-    hasSingleEnvUser,
-    setConfig,
-    clearConfig,
-    loadConfig,
-    getStoredConfig,
-    selectEnvUser,
-    autoLoginSingleUser,
+    defaultServerUrl,
+    isLoggedIn,
+    authHeader,
+    fetchConfig,
+    loginWithUser,
+    loginManual,
+    logout,
   }
 })

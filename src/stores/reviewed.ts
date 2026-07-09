@@ -20,7 +20,7 @@ export const useReviewedStore = defineStore('reviewed', () => {
   const initialized = ref(false)
 
   const storageKey = computed(() => {
-    const server = authStore.serverUrl || 'unknown-server'
+    const server = authStore.immichServerUrl || 'unknown-server'
     const user = authStore.currentUserName || 'default-user'
     return `${STORAGE_PREFIX}:${server}:${user}`
   })

@@ -10,7 +10,8 @@ describe('reviewed store', () => {
 
   it('persists keep/delete decisions', () => {
     const auth = useAuthStore()
-    auth.setConfig('http://server-a', 'key-a', 'Alice')
+    auth.immichServerUrl = 'http://server-a'
+    auth.currentUserName = 'Alice'
 
     const reviewed = useReviewedStore()
     reviewed.markReviewed('asset-1', 'keep')
@@ -31,12 +32,14 @@ describe('reviewed store', () => {
 
   it('scopes cache by server/user', () => {
     const auth = useAuthStore()
-    auth.setConfig('http://server-a', 'key-a', 'Alice')
+    auth.immichServerUrl = 'http://server-a'
+    auth.currentUserName = 'Alice'
 
     const reviewed = useReviewedStore()
     reviewed.markReviewed('asset-1', 'keep')
 
-    auth.setConfig('http://server-b', 'key-b', 'Bob')
+    auth.immichServerUrl = 'http://server-b'
+    auth.currentUserName = 'Bob'
     expect(reviewed.isReviewed('asset-1')).toBe(false)
 
     const keys = Object.keys(localStorage).filter((k) => k.startsWith('immich-swipe-reviewed'))

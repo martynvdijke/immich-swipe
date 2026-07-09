@@ -35,30 +35,6 @@ export interface ImmichAsset {
   }
 }
 
-export interface ImmichConfig {
-  serverUrl: string
-  apiKey: string
-}
-
-export interface DeleteAssetsRequest {
-  ids: string[]
-  force?: boolean
-}
-
-export interface DeleteAssetsResponse {
-  count: number
-}
-
-export interface EnvUser {
-  name: string
-  apiKey: string
-}
-
-export interface EnvConfig {
-  serverUrl: string
-  users: EnvUser[]
-}
-
 export interface ImmichAlbum {
   id: string
   albumName: string
@@ -66,10 +42,6 @@ export interface ImmichAlbum {
   createdAt?: string
   updatedAt?: string
   albumThumbnailAssetId?: string
-}
-
-export interface AddAssetsToAlbumRequest {
-  ids: string[]
 }
 
 export interface MetadataSearchRequest {

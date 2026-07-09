@@ -3,29 +3,15 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
-import { useImmich } from '@/composables/useImmich'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
-const { testConnection } = useImmich()
 
-const serverUrl = ref(authStore.serverUrl || '')
-const apiKey = ref(authStore.apiKey || '')
+const serverUrl = ref(authStore.immichServerUrl || '')
+const apiKey = ref('')
 const error = ref('')
 const isSubmitting = ref(false)
-const showEnvHint = ref(false)
-
-const envExample = `# .env file in project root
-VITE_SERVER_URL=<your-server-proxy e.g. http://immich.local>
-
-# User 1
-VITE_USER_1_NAME=<your-user1>
-VITE_USER_1_API_KEY=<your-api-key-here>
-
-# User 2 (optional)
-VITE_USER_2_NAME=<another-user2>
-VITE_USER_2_API_KEY=<another-api-key-here>`
 
 async function handleSubmit() {
   error.value = ''
@@ -41,38 +27,16 @@ async function handleSubmit() {
 
   isSubmitting.value = true
 
-  // Save config temporarily for test
-  authStore.setConfig(serverUrl.value.trim(), apiKey.value.trim())
-
-  // Test connection
-  const success = await testConnection()
+  const success = await authStore.loginManual(apiKey.value.trim(), serverUrl.value.trim())
 
   if (success) {
     uiStore.toast('Connected successfully!', 'success')
     router.push('/')
   } else {
     error.value = 'Failed to connect. Please check your URL and API key.'
-    authStore.clearConfig()
   }
 
   isSubmitting.value = false
-}
-
-function insertStoredConfig() {
-  const stored = authStore.getStoredConfig()
-  if (!stored) {
-    uiStore.toast('No saved config found', 'error', 2000)
-    return
-  }
-
-  error.value = ''
-  serverUrl.value = stored.serverUrl || ''
-  apiKey.value = stored.apiKey || ''
-}
-
-function copyEnvExample() {
-  navigator.clipboard.writeText(envExample)
-  uiStore.toast('Copied to clipboard!', 'success', 1500)
 }
 </script>
 
@@ -87,70 +51,6 @@ function copyEnvExample() {
         <p :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-600'">
           Quickly review your photo library
         </p>
-      </div>
-
-      <!-- Env Hint Collapsible -->
-      <div class="mb-6">
-        <button
-          @click="showEnvHint = !showEnvHint"
-          class="w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors text-sm"
-          :class="uiStore.isDarkMode
-            ? 'border-gray-700 hover:bg-gray-900 text-gray-400'
-            : 'border-gray-200 hover:bg-gray-50 text-gray-500'"
-        >
-          <span class="flex items-center gap-2">
-            <svg class="w-4 h-4 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            Skip this step by using a .env file !
-          </span>
-          <svg 
-            class="w-4 h-4 transition-transform" 
-            :class="{ 'rotate-180': showEnvHint }"
-            fill="none" 
-            stroke="currentColor" 
-            viewBox="0 0 24 24"
-          >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-        
-        <!-- Expandable content -->
-        <div 
-          v-show="showEnvHint"
-          class="mt-2 p-4 rounded-lg border text-sm"
-          :class="uiStore.isDarkMode
-            ? 'border-gray-700 bg-gray-900'
-            : 'border-gray-200 bg-gray-50'"
-        >
-          <p class="mb-3" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-600'">
-            Create a <code class="px-1.5 py-0.5 rounded" :class="uiStore.isDarkMode ? 'bg-gray-800' : 'bg-gray-200'">.env</code> file in your project root to auto-login or show a user selection screen:
-          </p>
-          
-          <div class="relative">
-            <pre 
-              class="p-3 rounded-lg overflow-x-auto text-xs"
-              :class="uiStore.isDarkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-200 text-gray-700'"
-            ><code>{{ envExample }}</code></pre>
-            
-            <button
-              @click="copyEnvExample"
-              class="absolute top-2 right-2 p-1.5 rounded transition-colors"
-              :class="uiStore.isDarkMode 
-                ? 'hover:bg-gray-700 text-gray-400' 
-                : 'hover:bg-gray-300 text-gray-500'"
-              title="Copy to clipboard"
-            >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-            </button>
-          </div>
-          
-          <p class="mt-3 text-xs" :class="uiStore.isDarkMode ? 'text-gray-500' : 'text-gray-500'">
-            💡 Single User will auto-login • Multiple users will redirect to a user selection
-          </p>
-        </div>
       </div>
 
       <!-- Login Form -->
@@ -197,19 +97,6 @@ function copyEnvExample() {
             Find your API key in Immich: Account Settings → API Keys
           </p>
         </div>
-
-        <!-- Insert from localStorage -->
-        <button
-          v-if="authStore.hasStoredConfig"
-          type="button"
-          @click="insertStoredConfig"
-          class="w-full py-3 px-4 rounded-lg font-medium border transition-colors"
-          :class="uiStore.isDarkMode
-            ? 'border-gray-700 text-white hover:bg-gray-900'
-            : 'border-gray-300 text-black hover:bg-gray-100'"
-        >
-          Use saved Immich settings
-        </button>
 
         <!-- Error message -->
         <div v-if="error" class="p-3 rounded-lg bg-red-500/20 text-red-400 text-sm">

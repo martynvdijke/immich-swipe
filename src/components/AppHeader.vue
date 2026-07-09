@@ -13,16 +13,15 @@ const reviewedStore = useReviewedStore()
 const router = useRouter()
 const showResetModal = ref(false)
 
-function logout() {
-  authStore.clearConfig()
+function handleLogout() {
+  authStore.logout()
   uiStore.resetStats()
 
-  // If .env with multiple users -> user selection
-  // else -> login
-  if (authStore.hasEnvConfig && !authStore.hasSingleEnvUser) {
+  // If env users configured -> user selection; else -> manual login
+  if (authStore.envUsers.length > 1) {
     router.push('/select-user')
-  } else if (authStore.hasEnvConfig && authStore.hasSingleEnvUser) {
-    // Single user .env -> reset to auto-login
+  } else if (authStore.envUsers.length === 1) {
+    // Single env user -> re-login
     router.push('/')
   } else {
     router.push('/login')
@@ -192,14 +191,14 @@ function confirmResetReviewed() {
       </button>
       <!-- Logout / Switch User -->
       <button
-        @click="logout"
+        @click="handleLogout"
         class="p-2 rounded-full transition-colors"
         :class="uiStore.isDarkMode ? 'hover:bg-gray-800 text-white' : 'hover:bg-gray-200 text-gray-700'"
-        :aria-label="authStore.hasEnvConfig && !authStore.hasSingleEnvUser ? 'Switch user' : 'Logout'"
-        :title="authStore.hasEnvConfig && !authStore.hasSingleEnvUser ? 'Switch user' : 'Logout'"
+        :aria-label="authStore.envUsers.length > 1 ? 'Switch user' : 'Logout'"
+        :title="authStore.envUsers.length > 1 ? 'Switch user' : 'Logout'"
       >
         <!-- Switch user icon for multi-user env -->
-        <svg v-if="authStore.hasEnvConfig && !authStore.hasSingleEnvUser" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <svg v-if="authStore.envUsers.length > 1" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
         </svg>
         <!-- Logout icon for manual login -->

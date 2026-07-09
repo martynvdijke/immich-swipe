@@ -22,7 +22,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
   const initialized = ref(false)
 
   const storageKey = computed(() => {
-    const server = authStore.serverUrl || 'unknown-server'
+    const server = authStore.immichServerUrl || 'unknown-server'
     const user = authStore.currentUserName || 'default-user'
     return `${STORAGE_PREFIX}:${server}:${user}`
   })

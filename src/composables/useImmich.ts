@@ -56,31 +56,31 @@ export function useImmich() {
   }
 
   watch(
-    () => [authStore.serverUrl, authStore.currentUserName],
+    () => [authStore.immichServerUrl, authStore.currentUserName],
     () => {
       albumsCache.value = null
       resetReviewFlow()
     }
   )
 
-  // Generic Immich API request helper
+  // Generic Immich API request helper via Go backend
   async function apiRequest<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    if (!authStore.immichBaseUrl) {
-      throw new Error('Immich server URL is not configured')
+    if (!authStore.isLoggedIn) {
+      throw new Error('Not logged in')
     }
 
     const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`
-    const url = `${authStore.immichBaseUrl}${authStore.proxyBaseUrl}${normalizedEndpoint}`
+    const url = `/api${normalizedEndpoint}`
     const headers: HeadersInit = {
-      'x-api-key': authStore.apiKey,
       'Accept': 'application/json',
+      ...authStore.authHeader,
       ...options.headers,
     }
 
-    // Add Content-Type for non-GET requests with body
+    // Add Content-Type for requests with body
     if (options.body && typeof options.body === 'string') {
       (headers as Record<string, string>)['Content-Type'] = 'application/json'
     }
@@ -89,6 +89,12 @@ export function useImmich() {
       ...options,
       headers,
     })
+
+    if (response.status === 401) {
+      authStore.logout()
+      window.location.href = '/login'
+      throw new Error('Session expired')
+    }
 
     if (!response.ok) {
       const errorText = await response.text()
@@ -108,7 +114,7 @@ export function useImmich() {
     return JSON.parse(text)
   }
 
-  // Test connection
+  // Test connection (proxied through backend)
   async function testConnection(): Promise<boolean> {
     try {
       uiStore.setLoading(true, 'Testing connection...')
@@ -260,10 +266,7 @@ export function useImmich() {
         const url = getAssetThumbnailUrl(nextAsset.value.id, 'preview')
         if (!url) return
         fetch(url, {
-          headers: {
-            'x-api-key': authStore.apiKey,
-            'X-Target-Host': authStore.immichBaseUrl,
-          },
+          headers: authStore.authHeader,
         }).catch(() => {})
       }
     } catch (e) {
@@ -301,27 +304,18 @@ export function useImmich() {
     }
   }
 
-  // Get asset thumbnail URL
+  // Get asset thumbnail URL (served through Go backend proxy)
   function getAssetThumbnailUrl(assetId: string, size: 'thumbnail' | 'preview' = 'preview'): string {
-    if (!authStore.immichBaseUrl) {
-      return ''
-    }
-    return `${authStore.immichBaseUrl}${authStore.proxyBaseUrl}/assets/${assetId}/thumbnail?size=${size}`
+    return `/api/assets/${assetId}/thumbnail?size=${size}`
   }
 
   function getAssetOriginalUrl(assetId: string): string {
-    if (!authStore.immichBaseUrl) {
-      return ''
-    }
-    return `${authStore.immichBaseUrl}${authStore.proxyBaseUrl}/assets/${assetId}/original`
+    return `/api/assets/${assetId}/original`
   }
 
-  // Get headers for image requests
+  // Get auth headers for image/video requests (through Go backend)
   function getAuthHeaders(): Record<string, string> {
-    return {
-      'x-api-key': authStore.apiKey,
-      'X-Target-Host': authStore.immichBaseUrl,
-    }
+    return authStore.authHeader
   }
 
   async function fetchAlbums(force: boolean = false): Promise<ImmichAlbum[]> {

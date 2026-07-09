@@ -10,7 +10,8 @@ describe('preferences store', () => {
 
   it('persists review order and hotkeys', () => {
     const auth = useAuthStore()
-    auth.setConfig('http://server-a', 'key-a', 'Alice')
+    auth.immichServerUrl = 'http://server-a'
+    auth.currentUserName = 'Alice'
 
     const prefs = usePreferencesStore()
     prefs.setReviewOrder('chronological')
@@ -33,11 +34,13 @@ describe('preferences store', () => {
 
   it('switches namespace when user changes', () => {
     const auth = useAuthStore()
-    auth.setConfig('http://server-a', 'key-a', 'Alice')
+    auth.immichServerUrl = 'http://server-a'
+    auth.currentUserName = 'Alice'
     const prefs = usePreferencesStore()
     prefs.setHotkey('2', 'album-a2')
 
-    auth.setConfig('http://server-b', 'key-b', 'Bob')
+    auth.immichServerUrl = 'http://server-b'
+    auth.currentUserName = 'Bob'
     // Preferences should reset for the new namespace
     expect(prefs.reviewOrder).toBe('random')
     expect(Object.keys(prefs.albumHotkeys).length).toBe(0)

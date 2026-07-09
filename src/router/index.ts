@@ -24,10 +24,10 @@ const router = createRouter({
 })
 
 // Navigation guard
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to, _from, next) => {
   const authStore = useAuthStore()
 
-  // Logged in -> home
+  // Logged in with session token -> home
   if (authStore.isLoggedIn) {
     if (to.path === '/login' || to.path === '/select-user') {
       next('/')
@@ -37,37 +37,45 @@ router.beforeEach((to, _from, next) => {
     return
   }
 
-  // Not logged in -> routing based on .env
-  
+  // Not logged in -> check backend config for env users
+  try {
+    await authStore.fetchConfig()
+  } catch {
+    // Backend unavailable, proceed to login
+  }
+
   // Accessing login page
   if (to.path === '/login') {
-    // .env -> redirect
-    if (authStore.hasEnvConfig) {
-      if (authStore.hasSingleEnvUser) {
-        authStore.autoLoginSingleUser()
+    if (authStore.envUsers.length === 1) {
+      // Single env user -> auto-login via backend
+      const ok = await authStore.loginWithUser(authStore.envUsers[0])
+      if (ok) {
         next('/')
       } else {
-        // multi user -> select
-        next('/select-user')
+        next()
       }
+    } else if (authStore.envUsers.length > 1) {
+      // Multi user -> selection
+      next('/select-user')
     } else {
-      // No .env -> login page
+      // No env users -> manual login
       next()
     }
     return
   }
 
-  // Accessing selection
+  // Accessing user selection
   if (to.path === '/select-user') {
-    if (!authStore.hasEnvConfig) {
-      // No .env -> login page
+    if (authStore.envUsers.length === 0) {
       next('/login')
-    } else if (authStore.hasSingleEnvUser) {
-      // Single user -> auto login
-      authStore.autoLoginSingleUser()
-      next('/')
+    } else if (authStore.envUsers.length === 1) {
+      const ok = await authStore.loginWithUser(authStore.envUsers[0])
+      if (ok) {
+        next('/')
+      } else {
+        next('/login')
+      }
     } else {
-      // multi user -> allow selection
       next()
     }
     return
@@ -75,22 +83,21 @@ router.beforeEach((to, _from, next) => {
 
   // Protected routes
   if (to.meta.requiresAuth) {
-    if (authStore.hasEnvConfig) {
-      if (authStore.hasSingleEnvUser) {
-        authStore.autoLoginSingleUser()
+    if (authStore.envUsers.length === 1) {
+      const ok = await authStore.loginWithUser(authStore.envUsers[0])
+      if (ok) {
         next()
       } else {
-        // multi user -> selection
-        next('/select-user')
+        next('/login')
       }
+    } else if (authStore.envUsers.length > 1) {
+      next('/select-user')
     } else {
-      // No .env -> login page
       next('/login')
     }
     return
   }
 
-  // Default -> allow
   next()
 })
 

@@ -27,16 +27,12 @@ const videoLoading = ref(false)
 const videoRef = ref<HTMLVideoElement | null>(null)
 const videoAbortController = ref<AbortController | null>(null)
 let autoplayCleanup: (() => void) | null = null
-const assetApiBaseUrl = computed(() => {
-  if (!authStore.immichBaseUrl) return ''
-  return `${authStore.immichBaseUrl}${authStore.proxyBaseUrl}`
-})
 const assetPageUrl = computed(() => {
-  if (!authStore.immichBaseUrl) return ''
+  if (!authStore.immichServerUrl) return ''
   try {
-    const base = authStore.immichBaseUrl.endsWith('/')
-      ? authStore.immichBaseUrl
-      : `${authStore.immichBaseUrl}/`
+    const base = authStore.immichServerUrl.endsWith('/')
+      ? authStore.immichServerUrl
+      : `${authStore.immichServerUrl}/`
     return new URL(`photos/${encodeURIComponent(props.asset.id)}`, base).toString()
   } catch {
     return ''
@@ -98,18 +94,12 @@ function configureInlinePlayback(video: HTMLVideoElement) {
 }
 
 function buildAssetApiUrl(path: string): string {
-  if (!assetApiBaseUrl.value) {
-    throw new Error('Immich server URL missing')
-  }
   const normalizedPath = path.startsWith('/') ? path.slice(1) : path
-  return `${assetApiBaseUrl.value}/assets/${props.asset.id}/${normalizedPath}`
+  return `/api/assets/${props.asset.id}/${normalizedPath}`
 }
 
 function getAuthHeaders(): Record<string, string> {
-  return {
-    'x-api-key': authStore.apiKey,
-    'X-Target-Host': authStore.immichBaseUrl,
-  }
+  return authStore.authHeader
 }
 
 function openInImmich() {
