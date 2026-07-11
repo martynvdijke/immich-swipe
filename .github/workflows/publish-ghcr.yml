@@ -37,6 +37,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: '1.26'
+          cache-dependency-path: server/go.mod
 
       - name: Verify Go build
         run: cd server && go build -o /dev/null .
