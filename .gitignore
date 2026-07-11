@@ -13,6 +13,10 @@ dist-ssr
 *.local
 *.tsbuildinfo
 
+# Go server binary
+immich-swipe-server
+server/server
+
 # Environment files with secrets
 .env
 .env.local

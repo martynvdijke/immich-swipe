@@ -1,3 +1,4 @@
+import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useAuthStore } from '@/stores/auth'
@@ -8,7 +9,7 @@ describe('preferences store', () => {
     setActivePinia(createPinia())
   })
 
-  it('persists review order and hotkeys', () => {
+  it('persists review order and hotkeys', async () => {
     const auth = useAuthStore()
     auth.immichServerUrl = 'http://server-a'
     auth.currentUserName = 'Alice'
@@ -17,6 +18,9 @@ describe('preferences store', () => {
     prefs.setReviewOrder('chronological')
     prefs.setHotkey('1', 'album-a')
     prefs.setLastUsedAlbumId('album-a')
+
+    // Wait for Vue watchers to flush and persist to localStorage
+    await nextTick()
 
     const keys = Object.keys(localStorage).filter((k) => k.startsWith('immich-swipe-preferences'))
     expect(keys.length).toBe(1)
@@ -32,15 +36,20 @@ describe('preferences store', () => {
     expect(prefsReloaded.albumHotkeys['1']).toBe('album-a')
   })
 
-  it('switches namespace when user changes', () => {
+  it('switches namespace when user changes', async () => {
     const auth = useAuthStore()
     auth.immichServerUrl = 'http://server-a'
     auth.currentUserName = 'Alice'
     const prefs = usePreferencesStore()
     prefs.setHotkey('2', 'album-a2')
+    // Wait for persist after hotkey set
+    await nextTick()
 
     auth.immichServerUrl = 'http://server-b'
     auth.currentUserName = 'Bob'
+    // Immediate loadFromStorage fires via watch immediate + storageKey change
+    await nextTick()
+
     // Preferences should reset for the new namespace
     expect(prefs.reviewOrder).toBe('random')
     expect(Object.keys(prefs.albumHotkeys).length).toBe(0)

@@ -52,84 +52,66 @@ npm run dev
 
 Open `http://localhost:5173`.
 
-### Docker
+### Docker (recommended)
 
 ```bash
 cp env.example .env
-# edit .env
+# edit .env (set your Immich server URL and API key)
 docker compose up --build
 ```
 
 Open `http://localhost:2293`.
 
-Note: `.env` values are passed as build args and end up in the frontend bundle. Changing `.env` requires a rebuild.
+All configuration is read at **runtime** by the Go backend — no rebuild needed for `.env` changes. Just restart the container.
 
-### GitHub Pages
+### GitHub Pages / SPA-only mode
 
-This repo includes a GitHub Actions workflow that builds and deploys the SPA to GitHub Pages on every push to `main`.
+The app can also run as a pure SPA (no Go backend) behind an Nginx reverse proxy. This repo includes a GitHub Actions workflow (`deploy-gh-pages.yml`) that deploys to GitHub Pages on every push to `main`.
 
-After enabling Pages in your repo settings, your URL will be:
-- `https://<owner>.github.io/<repo>/`
-
-<details>
-  <summary>Login screen</summary>
-  <p align="center">
-    <img src="docs/screenshots/login.png" width="320" alt="Login screen" />
-  </p>
-</details>
+In SPA-only mode, API keys are stored in `localStorage` and the browser calls Immich directly.
 
 ## Configuration
 
-### Option A: `.env` users (build-time)
+### Option A: `.env` with Go backend (Docker)
 
-See `env.example`.
+The Go backend reads runtime environment variables (no rebuild needed):
 
 ```bash
-VITE_SERVER_URL=https://immich.example.com
-VITE_USER_1_NAME=User 1
-VITE_USER_1_API_KEY=your-api-key
+IMMICH_SERVER_URL=https://immich.example.com
+IMMICH_API_KEY_1_NAME=Alice
+IMMICH_API_KEY_1_KEY=your-api-key-here
 ```
-
-Tip: `VITE_SERVER_URL` can be the base URL (recommended) or end with `/api` — the app normalizes it.
 
 Behavior:
 - 1 user configured: auto-login
 - >1 users configured: user selection screen (`/select-user`)
-- no `.env` users: manual login (`/login`), stored in `localStorage`
+- no API keys configured: manual login (`/login`), enter server URL + API key in the UI
 
-Note: user slots are currently wired up to `VITE_USER_5_*` in `src/vite-env.d.ts`, `Dockerfile`, and `docker-compose.yml`.
+### Option B: manual login (SPA-only or fallback)
 
-Security note: `VITE_*` variables are embedded into the compiled frontend. Only use `VITE_USER_*_API_KEY` for private deployments/images.
+If no API keys are configured in the environment, the app falls back to manual login:
+- Enter your Immich Server URL and API key in the login screen
+- These are kept in `sessionStorage` (cleared on tab close) — or `localStorage` in SPA-only mode
 
-### Option B: manual login (runtime)
+## Architecture
 
-If you don’t configure `.env` users, the app asks for:
-- Immich Server URL
-- API key
+The app uses a **Go backend** that serves static files and proxies all Immich API requests:
 
-Those values are stored in `localStorage` under `immich-swipe-config`.
-
-## API / CORS / Proxy
-
-All requests use Immich’s API (`/api/...`) with the `x-api-key` header, so your Immich instance (or reverse proxy in front of it) needs to allow CORS.
-
-If `VITE_SERVER_URL` points directly to your Immich instance (for example `https://immich.example.com`), your browser calls `https://immich.example.com/api/...`.
-
-You’ll need CORS headers. For Nginx Proxy Manager, add:
-
-```nginx
-add_header 'Access-Control-Allow-Origin' '*' always;
-add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, PATCH, DELETE, OPTIONS' always;
-add_header 'Access-Control-Allow-Headers' 'X-Api-Key, X-Target-Host, User-Agent, Content-Type, Authorization, Range, Accept' always;
-add_header 'Access-Control-Expose-Headers' 'Content-Length, Content-Range, Accept-Ranges' always;
-if ($request_method = OPTIONS) { return 204; }
+```
+Browser → Go backend (port 8080) → Immich server
+         ↕
+    sessionStorage (session token)
 ```
 
-See also: https://docs.immich.app/administration/reverse-proxy/
+- Immich API keys stay **server-side** — never in the browser
+- No CORS configuration needed
+- Session tokens with 24h sliding expiry
 
-## Stored data (localStorage)
+The frontend (Vue 3 SPA) authenticates via the backend and all API calls go through the reverse proxy.
 
-- `immich-swipe-config` (manual login: server URL + API key)
+## Stored data (localStorage / sessionStorage)
+
+- `immich-swipe-session` (sessionStorage — session token from Go backend)
 - `immich-swipe-theme`
 - `immich-swipe-skip-videos`
 - `immich-swipe-stats:<server>:<user>` (keep/delete counters)
