@@ -1,5 +1,5 @@
 # Stage 1: Build frontend
-FROM node:22-alpine AS frontend-builder
+FROM node:24-alpine AS frontend-builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -15,7 +15,7 @@ COPY server/ .
 RUN CGO_ENABLED=0 go build -o immich-swipe-server .
 
 # Stage 3: Runtime
-FROM alpine:3.21
+FROM alpine:3.22
 
 RUN apk --no-cache add ca-certificates
 
