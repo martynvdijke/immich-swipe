@@ -8,7 +8,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
 
-const serverUrl = ref(authStore.immichServerUrl || '')
+const serverUrl = ref(authStore.immichServerUrl || authStore.defaultServerUrl || '')
 const apiKey = ref('')
 const error = ref('')
 const isSubmitting = ref(false)
