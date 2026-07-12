@@ -15,7 +15,7 @@ COPY server/ .
 RUN CGO_ENABLED=0 go build -o immich-swipe-server .
 
 # Stage 3: Runtime
-FROM alpine:3.22
+FROM alpine:3.24
 
 RUN apk --no-cache add ca-certificates
 
