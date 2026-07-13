@@ -11,6 +11,7 @@ export const useAuthStore = defineStore('auth', () => {
   const immichServerUrl = ref<string>('')
   const envUsers = ref<string[]>([])
   const defaultServerUrl = ref<string | null>(null)
+  const serverVersion = ref<string>('')
 
   const isLoggedIn = computed(() => sessionToken.value !== null)
 
@@ -44,6 +45,7 @@ export const useAuthStore = defineStore('auth', () => {
         const data = await res.json()
         envUsers.value = data.users || []
         defaultServerUrl.value = data.defaultServerUrl || null
+        serverVersion.value = data.version || ''
       }
     } catch {
       // Backend not available yet
@@ -119,6 +121,7 @@ export const useAuthStore = defineStore('auth', () => {
     immichServerUrl,
     envUsers,
     defaultServerUrl,
+    serverVersion,
     isLoggedIn,
     authHeader,
     fetchConfig,

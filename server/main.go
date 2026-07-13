@@ -22,6 +22,9 @@ import (
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
+// Version is set at build time via -ldflags (e.g. -X main.Version=1.2.5)
+var Version = "dev"
+
 type UserConfig struct {
 	Name   string
 	APIKey string
@@ -41,8 +44,18 @@ func loadConfig() Config {
 		ServerURL:  os.Getenv("IMMICH_SERVER_URL"),
 	}
 	for i := 1; ; i++ {
+		// Primary naming: IMMICH_API_KEY_<N>_NAME / IMMICH_API_KEY_<N>_KEY
 		name := os.Getenv(fmt.Sprintf("IMMICH_API_KEY_%d_NAME", i))
 		key := os.Getenv(fmt.Sprintf("IMMICH_API_KEY_%d_KEY", i))
+
+		// Fallback naming: IMMICH_USER_<N>_NAME / IMMICH_USER_<N>_API_KEY
+		if name == "" {
+			name = os.Getenv(fmt.Sprintf("IMMICH_USER_%d_NAME", i))
+		}
+		if key == "" {
+			key = os.Getenv(fmt.Sprintf("IMMICH_USER_%d_API_KEY", i))
+		}
+
 		if name == "" || key == "" {
 			break
 		}
@@ -195,6 +208,7 @@ func (s *Server) configHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"users":           userNames,
 		"defaultServerUrl": s.config.ServerURL,
+		"version":         Version,
 	})
 }
 
@@ -445,7 +459,7 @@ func main() {
 	}()
 
 	go func() {
-		log.Printf("Immich Swipe server starting on %s", cfg.ListenAddr)
+		log.Printf("Immich Swipe server v%s starting on %s", Version, cfg.ListenAddr)
 		log.Printf("  Static dir: %s", cfg.StaticDir)
 		log.Printf("  Users configured: %d", len(cfg.Users))
 		if cfg.ServerURL != "" {

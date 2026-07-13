@@ -11,8 +11,10 @@ RUN npm run build
 FROM golang:1.26-alpine AS server-builder
 
 WORKDIR /server
+COPY --from=frontend-builder /app/package.json .
 COPY server/ .
-RUN CGO_ENABLED=0 go build -o immich-swipe-server .
+RUN VERSION=$(grep -o '"version": *"[^"]*"' package.json | cut -d'"' -f4) && \
+    CGO_ENABLED=0 go build -ldflags="-X main.Version=$VERSION" -o immich-swipe-server .
 
 # Stage 3: Runtime
 FROM alpine:3.24
