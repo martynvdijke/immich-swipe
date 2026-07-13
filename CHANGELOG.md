@@ -1,3 +1,10 @@
+## [1.2.6](https://github.com/martynvdijke/immich-swipe/compare/v1.2.5...v1.2.6) (2026-07-13)
+
+
+### Bug Fixes
+
+* pre-fill server URL from backend defaultServerUrl on login page ([f6d2edd](https://github.com/martynvdijke/immich-swipe/commit/f6d2eddeac5e5d25b741b902f3ce714e50268a46))
+
 ## [1.2.5](https://github.com/martynvdijke/immich-swipe/compare/v1.2.4...v1.2.5) (2026-07-13)
 
 ## [1.2.4](https://github.com/martynvdijke/immich-swipe/compare/v1.2.3...v1.2.4) (2026-07-13)
