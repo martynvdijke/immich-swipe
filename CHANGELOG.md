@@ -1,3 +1,10 @@
+## [1.2.7](https://github.com/martynvdijke/immich-swipe/compare/v1.2.6...v1.2.7) (2026-07-13)
+
+
+### Bug Fixes
+
+* support IMMICH_USER_* env vars and add version banner ([9b0fa05](https://github.com/martynvdijke/immich-swipe/commit/9b0fa05e7e3019ae7ade6fecbb4a38920d91a54c))
+
 ## [1.2.6](https://github.com/martynvdijke/immich-swipe/compare/v1.2.5...v1.2.6) (2026-07-13)
 
 
