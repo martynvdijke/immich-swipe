@@ -373,6 +373,15 @@ func (s *Server) proxyHandler(w http.ResponseWriter, r *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			// Strip browser-originated auth headers so Immich's auth guard
+			// only sees the server-side x-api-key. Immich checks
+			// Authorization: Bearer before x-api-key, so forwarding the
+			// browser's Go session token would cause a 401 even with a
+			// valid API key.
+			req.Header.Del("Authorization")
+			req.Header.Del("x-immich-user-token")
+			req.Header.Del("x-immich-session-token")
+			req.Header.Del("x-immich-share-key")
 			req.Header.Set("x-api-key", session.APIKey)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

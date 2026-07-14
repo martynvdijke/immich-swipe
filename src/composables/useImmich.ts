@@ -3,6 +3,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useReviewedStore } from '@/stores/reviewed'
+import router from '@/router'
 import type {
   ImmichAsset,
   ImmichAlbum,
@@ -92,7 +93,10 @@ export function useImmich() {
 
     if (response.status === 401) {
       authStore.logout()
-      window.location.href = '/login'
+      // Block the router guard from immediately re-attempting auto-login,
+      // which would otherwise loop back into the same 401 state.
+      authStore.autoLoginBlocked = true
+      router.push('/login')
       throw new Error('Session expired')
     }
 

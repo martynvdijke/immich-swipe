@@ -12,6 +12,9 @@ export const useAuthStore = defineStore('auth', () => {
   const envUsers = ref<string[]>([])
   const defaultServerUrl = ref<string | null>(null)
   const serverVersion = ref<string>('')
+  // Set by the 401 handler / failed auto-login to prevent the router guard
+  // from re-attempting auto-login into an infinite loop.
+  const autoLoginBlocked = ref(false)
 
   const isLoggedIn = computed(() => sessionToken.value !== null)
 
@@ -65,6 +68,7 @@ export const useAuthStore = defineStore('auth', () => {
       currentUserName.value = data.userName || userName
       immichServerUrl.value = data.serverUrl || ''
       saveSession()
+      autoLoginBlocked.value = false
       return true
     } catch {
       return false
@@ -84,6 +88,7 @@ export const useAuthStore = defineStore('auth', () => {
       currentUserName.value = data.userName || 'manual'
       immichServerUrl.value = serverUrl
       saveSession()
+      autoLoginBlocked.value = false
       return true
     } catch {
       return false
@@ -102,6 +107,7 @@ export const useAuthStore = defineStore('auth', () => {
     currentUserName.value = ''
     immichServerUrl.value = ''
     sessionStorage.removeItem(STORAGE_KEY)
+    autoLoginBlocked.value = false
   }
 
   function saveSession() {
@@ -122,6 +128,7 @@ export const useAuthStore = defineStore('auth', () => {
     envUsers,
     defaultServerUrl,
     serverVersion,
+    autoLoginBlocked,
     isLoggedIn,
     authHeader,
     fetchConfig,

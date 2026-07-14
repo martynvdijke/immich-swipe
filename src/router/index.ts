@@ -44,14 +44,28 @@ router.beforeEach(async (to, _from, next) => {
     // Backend unavailable, proceed to login
   }
 
+  // Helper: attempt auto-login for a single env user, but only if the
+  // loop guard has not been tripped by a prior 401 or failed auto-login.
+  async function tryAutoLogin(): Promise<boolean | null> {
+    if (authStore.envUsers.length !== 1) return null
+    if (authStore.autoLoginBlocked) return false
+    const ok = await authStore.loginWithUser(authStore.envUsers[0])
+    if (!ok) {
+      // Block further auto-login attempts to break the login loop.
+      authStore.autoLoginBlocked = true
+    }
+    return ok
+  }
+
   // Accessing login page
   if (to.path === '/login') {
     if (authStore.envUsers.length === 1) {
-      // Single env user -> auto-login via backend
-      const ok = await authStore.loginWithUser(authStore.envUsers[0])
+      // Single env user -> auto-login via backend (unless blocked)
+      const ok = await tryAutoLogin()
       if (ok) {
         next('/')
       } else {
+        // Blocked or failed -> stay on manual login
         next()
       }
     } else if (authStore.envUsers.length > 1) {
@@ -69,13 +83,14 @@ router.beforeEach(async (to, _from, next) => {
     if (authStore.envUsers.length === 0) {
       next('/login')
     } else if (authStore.envUsers.length === 1) {
-      const ok = await authStore.loginWithUser(authStore.envUsers[0])
+      const ok = await tryAutoLogin()
       if (ok) {
         next('/')
       } else {
         next('/login')
       }
     } else {
+      // Multi-user: allow manual selection even if autoLoginBlocked is set
       next()
     }
     return
@@ -84,7 +99,7 @@ router.beforeEach(async (to, _from, next) => {
   // Protected routes
   if (to.meta.requiresAuth) {
     if (authStore.envUsers.length === 1) {
-      const ok = await authStore.loginWithUser(authStore.envUsers[0])
+      const ok = await tryAutoLogin()
       if (ok) {
         next()
       } else {
