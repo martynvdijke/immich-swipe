@@ -1,3 +1,10 @@
+## [1.2.8](https://github.com/martynvdijke/immich-swipe/compare/v1.2.7...v1.2.8) (2026-07-14)
+
+
+### Bug Fixes
+
+* break login loop by stripping browser auth headers in proxy + add loop guard ([a963693](https://github.com/martynvdijke/immich-swipe/commit/a96369305a27fb6b3df9f148f3f88f642beed168))
+
 ## [1.2.7](https://github.com/martynvdijke/immich-swipe/compare/v1.2.6...v1.2.7) (2026-07-13)
 
 
