@@ -27,6 +27,18 @@ const localStorageMock = new Proxy({}, {
 
 Object.defineProperty(globalThis, 'localStorage', { value: localStorageMock })
 
+// sessionStorage mock (auth session)
+const sessionStore: Record<string, string> = {}
+const sessionStorageMock = {
+  getItem: (key: string) => sessionStore[key] ?? null,
+  setItem: (key: string, value: string) => { sessionStore[key] = String(value) },
+  removeItem: (key: string) => { delete sessionStore[key] },
+  clear: () => { for (const k of Object.keys(sessionStore)) delete sessionStore[k] },
+  get length() { return Object.keys(sessionStore).length },
+  key: (index: number) => Object.keys(sessionStore)[index] ?? null,
+}
+Object.defineProperty(globalThis, 'sessionStorage', { value: sessionStorageMock })
+
 // Mock matchMedia for ui store
 Object.defineProperty(globalThis, 'matchMedia', {
   value: vi.fn().mockImplementation((query: string) => ({

@@ -2,46 +2,51 @@
 
 ## Kurzüberblick
 - Single-Page-App (Vue 3 + TypeScript + Tailwind) zum Durchsehen von Immich-Fotos: rechts = behalten, links = (in den Papierkorb) löschen.
-- Kein eigener Backend-Service: Browser spricht Immich API direkt an (oder über einen Reverse-Proxy, siehe unten).
+- Go-Backend (`server/main.go`): statische SPA + Session-Auth + Reverse-Proxy zu Immich.
 - State-Management über Pinia (`src/stores/*`), Routing über `vue-router` (`src/router/index.ts`).
 
 ## Quickstart (lokal)
-- Voraussetzungen: Node.js (Docker nutzt `node:20-alpine`), npm.
+- Voraussetzungen: Node.js (Docker nutzt `node:20-alpine`), npm, Go für Backend-Tests.
 - Install: `npm install`
 - Dev-Server: `npm run dev` (Vite, Port `5173`, `host: true`)
+- Backend: `cd server && go run .` (Default `:8080`)
 - Build: `npm run build`
 - Preview: `npm run preview`
 - Typecheck: `npm run type-check`
 
 ## Konfiguration (.env / Login-Flow)
-- `.env` Variablen (siehe `env.example` / `README.md`):
-  - `VITE_SERVER_URL` (Basis-URL für die API; Details siehe „API/Proxy/CORS“)
-  - `VITE_USER_<N>_NAME`, `VITE_USER_<N>_API_KEY` (Parser läuft hochzählig ab 1 bis Name/Key fehlen)
-  - Hinweis: `src/vite-env.d.ts`, `Dockerfile` und `docker-compose.yml` sind aktuell bis `N=5` verdrahtet; für mehr User diese Stellen erweitern.
+- Runtime-Env (Go-Backend, siehe `env.example` / `README.md`):
+  - `IMMICH_SERVER_URL` (Default-Immich-URL)
+  - `IMMICH_API_KEY_<N>_NAME` / `IMMICH_API_KEY_<N>_KEY` (optional; Auto-Login / User-Picker)
+  - Legacy-Fallback: `IMMICH_USER_<N>_NAME` / `IMMICH_USER_<N>_API_KEY`
 - Verhalten:
-  - 1 User in `.env`: Auto-Login (keine Login-Seite)
-  - >1 User in `.env`: User-Auswahl (`/select-user`)
-  - keine `.env`: manuelles Login (`/login`), Config wird in `localStorage` gespeichert
+  - 1 Env-User: Auto-Login
+  - >1 Env-User: User-Auswahl (`/select-user`); Link „Sign in with Immich account“ → `/login`
+  - keine Env-Keys: Login (`/login`) mit Tabs **Immich account** (email/password) oder **API key**
+- Login-API `POST /api/auth/login` Body-Varianten (mutually exclusive):
+  - `{ "userName" }` → Env-API-Key-Session
+  - `{ "apiKey", "serverUrl?" }` → manuelle API-Key-Session
+  - `{ "email", "password", "serverUrl?" }` → Immich Password-Login → Access-Token-Session
+- Session-Modi (server-side only):
+  - `apiKey`: Proxy setzt `x-api-key`
+  - `accessToken`: Proxy setzt `Authorization: Bearer <immich-access-token>`
+  - Browser-`Authorization` (Swipe-Session) wird vor Upstream immer gestrippt
 - Wichtige lokale Storage Keys:
-  - Auth: `immich-swipe-config` (Server-URL + API Key)
+  - Auth: `immich-swipe-session` (sessionStorage: Swipe-Token + userName + serverUrl; **keine** Immich-Secrets)
   - UI: `immich-swipe-theme`, `immich-swipe-skip-videos`
   - Stats: `immich-swipe-stats:<server>:<user>` (keep/delete Counter)
   - Review-Cache: `immich-swipe-reviewed:<server>:<user>` (bereits gesehene IDs + keep/delete)
-- Security-Hinweis: `VITE_*` Variablen sind Build-Time und landen im Frontend-Bundle → `VITE_USER_*_API_KEY` nur für private Deployments/Images nutzen (nicht öffentlich publishen).
+- Credential-Login braucht Immich Password-Login enabled; OAuth/SSO out of scope.
 
-## API/Proxy/CORS (wichtigster Stolperstein)
-- Zentrale Request-Helfer:
-  - `src/composables/useImmich.ts` → `apiRequest()` baut URLs als:
-    - `url = authStore.immichBaseUrl + authStore.proxyBaseUrl + endpoint`
-    - `proxyBaseUrl` ist aktuell fest `'/api'` (`src/stores/auth.ts`)
-    - `immichBaseUrl` normalisiert `serverUrl` (entfernt ggf. `/api` am Ende)
-- Praktische Konsequenz:
-  - Wenn `VITE_SERVER_URL` auf die Immich-Instanz zeigt (z.B. `https://immich.example.com`), gehen Requests an `https://immich.example.com/api/...` → dafür muss Immich CORS erlauben (README enthält Snippets).
-  - Es gibt zusätzlich eine Nginx-Config (`nginx.conf`) mit Proxy-Location `/immich-api/` inkl. CORS-Headern. Damit das zur aktuellen Client-URL-Bildung passt, muss `VITE_SERVER_URL` i.d.R. auf `<app-origin>/immich-api` zeigen, damit der Client `/immich-api/api/...` aufruft.
-- Security-Hinweis (Proxy): `nginx.conf` erlaubt per `X-Target-Host` ein dynamisches `proxy_pass`-Ziel. Das ist funktional, kann aber als „Open Proxy/SSRF“ missbraucht werden, wenn der Reverse-Proxy öffentlich erreichbar ist.
+## API/Proxy
+- Frontend ruft nur das Go-Backend unter `/api/...` auf mit `Authorization: Bearer <swipe-session>`.
+- `src/composables/useImmich.ts` → `apiRequest()` nutzt relative `/api` + `authStore.authHeader`.
+- Proxy-Director: strip client auth headers, dann mode-spezifische Immich-Credentials anhängen.
+- Logout: `POST /api/auth/logout` löscht Swipe-Session; bei Access-Token-Mode best-effort Immich logout.
 
 ## Immich API (Erkenntnisse / relevante Endpoints)
-- Alle Requests laufen in dieser App effektiv gegen `.../api/...` (wegen `proxyBaseUrl = '/api'`) und nutzen den Header `x-api-key`.
+- Proxied Requests: je nach Session `x-api-key` **oder** Immich Bearer (nie beides mit Swipe-Token).
+- Auth login: `POST /auth/login` `{ email, password }` → `accessToken`, `name`, `userEmail`, `userId`
 - Connection-Check: `GET /users/me`
 - Random Asset: `GET /assets/random?count=<n>`
 - Chronologisch: `POST /search/metadata` (Body u.a. `take`, `size`, `skip`, `order`, `assetType`)
@@ -67,8 +72,10 @@
 
 ## Code-Map (wichtigste Stellen)
 - Routing/Auth:
-  - `src/router/index.ts` (Guard: Redirects je nach Login/.env-Konfig)
-  - `src/stores/auth.ts` (env-Parsing, `localStorage`, URL-Normalisierung)
+  - `src/router/index.ts` (Guard: Redirects je nach Login/Env-Konfig, autoLoginBlocked)
+  - `src/stores/auth.ts` (sessionStorage, loginWithUser/loginManual/loginWithCredentials)
+  - `src/views/LoginView.vue` (Account- vs API-Key-Tabs)
+  - `server/main.go` (Sessions, Login, Proxy, Logout)
 - Immich-Integration:
   - `src/composables/useImmich.ts` (Random Asset inkl. Skip-Videos Filter, Delete/Restore, Undo zeigt gelöschtes Asset wieder, Preload)
   - `src/types/immich.ts` (API-Typen)

@@ -3,7 +3,11 @@ import { ref, computed } from 'vue'
 
 const STORAGE_KEY = 'immich-swipe-session'
 
-export type LoginMethod = 'env-user' | 'manual'
+export type LoginMethod = 'env-user' | 'manual' | 'credentials'
+
+export type LoginResult =
+  | { ok: true }
+  | { ok: false; error: string }
 
 export const useAuthStore = defineStore('auth', () => {
   const sessionToken = ref<string | null>(null)
@@ -55,6 +59,26 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  function applyLoginSuccess(data: { token?: string; userName?: string; serverUrl?: string }, fallbackUserName: string, fallbackServerUrl = '') {
+    sessionToken.value = data.token ?? null
+    currentUserName.value = data.userName || fallbackUserName
+    immichServerUrl.value = data.serverUrl || fallbackServerUrl
+    saveSession()
+    autoLoginBlocked.value = false
+  }
+
+  async function parseLoginError(res: Response, fallback: string): Promise<string> {
+    try {
+      const data = await res.json()
+      if (data?.error && typeof data.error === 'string') {
+        return data.error
+      }
+    } catch {
+      // ignore
+    }
+    return fallback
+  }
+
   async function loginWithUser(userName: string): Promise<boolean> {
     try {
       const res = await fetch('/api/auth/login', {
@@ -64,11 +88,7 @@ export const useAuthStore = defineStore('auth', () => {
       })
       if (!res.ok) return false
       const data = await res.json()
-      sessionToken.value = data.token
-      currentUserName.value = data.userName || userName
-      immichServerUrl.value = data.serverUrl || ''
-      saveSession()
-      autoLoginBlocked.value = false
+      applyLoginSuccess(data, userName)
       return true
     } catch {
       return false
@@ -84,14 +104,34 @@ export const useAuthStore = defineStore('auth', () => {
       })
       if (!res.ok) return false
       const data = await res.json()
-      sessionToken.value = data.token
-      currentUserName.value = data.userName || 'manual'
-      immichServerUrl.value = serverUrl
-      saveSession()
-      autoLoginBlocked.value = false
+      applyLoginSuccess(data, 'manual', serverUrl)
       return true
     } catch {
       return false
+    }
+  }
+
+  async function loginWithCredentials(email: string, password: string, serverUrl: string): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, serverUrl }),
+      })
+      if (!res.ok) {
+        const fallback =
+          res.status === 401
+            ? 'Invalid email or password'
+            : res.status === 403
+              ? 'Password login is disabled on this Immich server'
+              : 'Failed to connect. Please check your server URL and credentials.'
+        return { ok: false, error: await parseLoginError(res, fallback) }
+      }
+      const data = await res.json()
+      applyLoginSuccess(data, email, serverUrl)
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
     }
   }
 
@@ -134,6 +174,7 @@ export const useAuthStore = defineStore('auth', () => {
     fetchConfig,
     loginWithUser,
     loginManual,
+    loginWithCredentials,
     logout,
   }
 })

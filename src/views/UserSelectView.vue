@@ -51,6 +51,18 @@ async function selectUser(userName: string) {
         </button>
       </div>
 
+      <!-- Alternate login for non-env Immich accounts -->
+      <div class="mt-6 text-center">
+        <button
+          type="button"
+          class="text-sm underline-offset-2 hover:underline transition-colors"
+          :class="uiStore.isDarkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-black'"
+          @click="router.push('/login')"
+        >
+          Sign in with Immich account
+        </button>
+      </div>
+
       <!-- Theme toggle -->
       <div class="mt-8 flex justify-center">
         <button

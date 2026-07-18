@@ -85,13 +85,29 @@ IMMICH_API_KEY_1_KEY=your-api-key-here
 Behavior:
 - 1 user configured: auto-login
 - >1 users configured: user selection screen (`/select-user`)
-- no API keys configured: manual login (`/login`), enter server URL + API key in the UI
+- no API keys configured: login screen (`/login`) with Immich account or API key
 
-### Option B: manual login (SPA-only or fallback)
+Env API keys are optional. Households can skip them and use Immich email/password login instead.
 
-If no API keys are configured in the environment, the app falls back to manual login:
-- Enter your Immich Server URL and API key in the login screen
-- These are kept in `sessionStorage` (cleared on tab close) — or `localStorage` in SPA-only mode
+### Option B: Immich account or API key login
+
+On `/login` you can choose:
+
+1. **Immich account** (email + password + server URL)  
+   - The Go backend calls Immich password login and stores the Immich access token server-side  
+   - Requires password login enabled on Immich (`passwordLogin.enabled`)  
+   - Multiple people can each sign in with their own Immich account on the same deployment
+
+2. **API key** (server URL + API key)  
+   - Same as before; useful for private/single-user setups or when password login is disabled
+
+Only the opaque Swipe session token is kept in `sessionStorage` (cleared on tab close). Immich passwords and access tokens never leave the backend.
+
+From the multi-user picker (`/select-user`), use **Sign in with Immich account** for people who are not listed in env keys.
+
+### Option C: SPA-only mode
+
+In SPA-only / GitHub Pages mode (no Go backend), API keys are stored in `localStorage` and the browser calls Immich directly. Credential login requires the Go backend.
 
 ## Architecture
 
@@ -103,7 +119,9 @@ Browser → Go backend (port 8080) → Immich server
     sessionStorage (session token)
 ```
 
-- Immich API keys stay **server-side** — never in the browser
+- Immich API keys and access tokens stay **server-side** — never in the browser
+- Proxy auth depends on session mode: `x-api-key` (API-key login) or Immich `Authorization: Bearer` (account login)
+- The browser's Swipe session Bearer is never forwarded to Immich
 - No CORS configuration needed
 - Session tokens with 24h sliding expiry
 
