@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/martynvdijke/immich-swipe/compare/v1.2.14...v1.3.0) (2026-07-18)
+
+
+### Features
+
+* multi-person Immich credential login alongside API key auth ([a543f0a](https://github.com/martynvdijke/immich-swipe/commit/a543f0acb8573be3846a52b1dd200a59d16b4f3d))
+
 ## [1.2.14](https://github.com/martynvdijke/immich-swipe/compare/v1.2.13...v1.2.14) (2026-07-18)
 
 ## [1.2.13](https://github.com/martynvdijke/immich-swipe/compare/v1.2.12...v1.2.13) (2026-07-17)
