@@ -1,3 +1,10 @@
+## [1.3.3](https://github.com/martynvdijke/immich-swipe/compare/v1.3.2...v1.3.3) (2026-07-19)
+
+
+### Bug Fixes
+
+* **deps:** update dependency vue-router to v5 ([8b8b601](https://github.com/martynvdijke/immich-swipe/commit/8b8b601346f75d6c998f5cf5b3c2ec1c6cb0eabc))
+
 ## [1.3.2](https://github.com/martynvdijke/immich-swipe/compare/v1.3.1...v1.3.2) (2026-07-19)
 
 ## [1.3.1](https://github.com/martynvdijke/immich-swipe/compare/v1.3.0...v1.3.1) (2026-07-19)
