@@ -25,7 +25,7 @@
     "tailwindcss": "^4.1.17",
     "typescript": "^5.9.3",
     "vite": "^8.0.0",
-    "vitest": "^2.1.4",
+    "vitest": "^4.0.0",
     "vue-tsc": "^3.1.5"
   },
   "description": "Swipe right to keep photos, swipe left to delete them -> just like a dating app, but for immich! Powered by Vue 3 + TypeScript & Tailwind",
