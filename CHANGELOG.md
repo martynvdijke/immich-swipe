@@ -1,3 +1,11 @@
+## [1.3.4](https://github.com/martynvdijke/immich-swipe/compare/v1.3.3...v1.3.4) (2026-07-26)
+
+
+### Bug Fixes
+
+* **deps:** update dependency pinia to v4 ([efaefbe](https://github.com/martynvdijke/immich-swipe/commit/efaefbe512558e5e011c6413b04b4faa372606cc))
+* downgrade typescript to ^5.7.0 for vue-tsc compatibility ([a20ac7d](https://github.com/martynvdijke/immich-swipe/commit/a20ac7d03a03cf4f0b8418639e5b7fe82c313f8f))
+
 ## [1.3.3](https://github.com/martynvdijke/immich-swipe/compare/v1.3.2...v1.3.3) (2026-07-19)
 
 
