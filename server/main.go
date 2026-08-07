@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -178,8 +179,9 @@ func generateToken() string {
 // ─── Server ────────────────────────────────────────────────────────────────
 
 type Server struct {
-	config  Config
-	session *SessionStore
+	config    Config
+	session   *SessionStore
+	transport http.RoundTripper // optional instrumented transport for the reverse proxy
 }
 
 func NewServer(cfg Config) *Server {
@@ -642,6 +644,7 @@ func (s *Server) proxyHandler(w http.ResponseWriter, r *http.Request) {
 			// Never forward the Swipe session Bearer to Immich.
 			applySessionAuth(req, session)
 		},
+		Transport: s.transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("Proxy error: %v", err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream request failed"})
@@ -733,9 +736,23 @@ func main() {
 	cfg := loadConfig()
 	srv := NewServer(cfg)
 
+	// OpenTelemetry: initializes from OTEL_* env vars and degrades to a noop
+	// instance when no OTLP endpoint is configured.
+	tel := initTelemetry()
+	slog.SetDefault(tel.logger)
+	defer tel.shutdown(context.Background())
+
+	// Wrap the server with OTel tracing + metrics middleware when enabled.
+	var handler http.Handler = srv
+	if !tel.disabled {
+		handler = tel.metricsMiddleware(handler)
+		handler = tel.middleware(handler)
+	}
+	srv.transport = tel.proxyTransport
+
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
-		Handler: srv,
+		Handler: handler,
 	}
 
 	sigCh := make(chan os.Signal, 1)
