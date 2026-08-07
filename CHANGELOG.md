@@ -1,3 +1,11 @@
+# [1.4.0](https://github.com/martynvdijke/immich-swipe/compare/v1.3.7...v1.4.0) (2026-08-07)
+
+
+### Features
+
+* add OpenTelemetry observability to the Go server ([da0d789](https://github.com/martynvdijke/immich-swipe/commit/da0d7897e09eb674f86f7611327f0c3f4497c890))
+* scope the review feed and track review progress ([90d1330](https://github.com/martynvdijke/immich-swipe/commit/90d1330db14d4ffa8fcf588f668c0a6bf83ca1cb))
+
 ## [1.3.7](https://github.com/martynvdijke/immich-swipe/compare/v1.3.6...v1.3.7) (2026-07-28)
 
 ## [1.3.6](https://github.com/martynvdijke/immich-swipe/compare/v1.3.5...v1.3.6) (2026-07-27)
