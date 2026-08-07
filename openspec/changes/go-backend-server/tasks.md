@@ -47,7 +47,7 @@
 - [x] 6.2 Remove `nginx.conf`, Nginx runtime stage, and all `VITE_*` build args from Dockerfile
 - [x] 6.3 Update `docker-compose.yml` to pass runtime env vars (`IMMICH_SERVER_URL`, `IMMICH_API_KEY_*`) instead of build args
 - [x] 6.4 Update `env.example` with new Go server env vars
-- [ ] 6.5 Update `README.md` if needed for new config flow
+- [x] 6.5 Update `README.md` if needed for new config flow
 
 ## 7. Cleanup & Verification
 
@@ -56,4 +56,4 @@
 - [x] 7.3 Run `npm run type-check` and fix TypeScript errors
 - [x] 7.4 Run `npm run build` and verify frontend builds
 - [x] 7.5 Build Go binary and verify it compiles
-- [ ] 7.6 Update test files for new auth store API
+- [x] 7.6 Update test files for new auth store API
