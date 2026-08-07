@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useImmich } from '@/composables/useImmich'
 import { useUiStore } from '@/stores/ui'
 import { usePreferencesStore } from '@/stores/preferences'
-import type { ImmichAlbum } from '@/types/immich'
+import type { ImmichAlbum, ImmichPerson, ReviewScope } from '@/types/immich'
 import AppHeader from '@/components/AppHeader.vue'
 import SwipeCard from '@/components/SwipeCard.vue'
 import ActionButtons from '@/components/ActionButtons.vue'
 import AlbumPicker from '@/components/AlbumPicker.vue'
+import ReviewScopePicker from '@/components/ReviewScopePicker.vue'
+import PersonPicker from '@/components/PersonPicker.vue'
 
 const {
   currentAsset,
@@ -19,6 +21,9 @@ const {
   deletePhoto,
   undoLastAction,
   fetchAlbums,
+  fetchPeople,
+  getPersonThumbnailUrl,
+  reviewTotal,
   canUndo,
 } = useImmich()
 const uiStore = useUiStore()
@@ -28,6 +33,35 @@ const showAlbumPicker = ref(false)
 const isLoadingAlbums = ref(false)
 const albumsError = ref<string | null>(null)
 const albums = ref<ImmichAlbum[]>([])
+
+const showScopePicker = ref(false)
+
+const showPersonPicker = ref(false)
+const isLoadingPeople = ref(false)
+const peopleError = ref<string | null>(null)
+const people = ref<ImmichPerson[]>([])
+
+const scopeLabel = computed(() => {
+  const scope = preferencesStore.scope
+  if (scope.kind === 'library') return ''
+  if (scope.kind === 'album') {
+    return albums.value.find((album) => album.id === scope.albumId)?.albumName || 'Album'
+  }
+  if (scope.kind === 'favorites') return 'Favorites'
+  return 'Date range'
+})
+
+const personLabel = computed(() => {
+  const id = preferencesStore.selectedPersonId
+  if (!id) return ''
+  return people.value.find((person) => person.id === id)?.name || ''
+})
+
+const selectedPersonName = computed(() => {
+  const id = preferencesStore.selectedPersonId
+  if (!id) return ''
+  return people.value.find((person) => person.id === id)?.name || ''
+})
 
 // Keyboard navigation
 function handleKeydown(e: KeyboardEvent) {
@@ -69,7 +103,59 @@ function handleKeydown(e: KeyboardEvent) {
 function shouldIgnoreHotkeys(): boolean {
   const active = document.activeElement as HTMLElement | null
   const isTyping = active && ['INPUT', 'TEXTAREA'].includes(active.tagName)
-  return !!isTyping || showAlbumPicker.value
+  return !!isTyping || showAlbumPicker.value || showScopePicker.value || showPersonPicker.value
+}
+
+async function openScopePicker() {
+  await ensureAlbumsLoaded()
+  showScopePicker.value = true
+}
+
+function closeScopePicker() {
+  showScopePicker.value = false
+}
+
+function handleScopeApply(scope: ReviewScope) {
+  preferencesStore.setScope(scope)
+  showScopePicker.value = false
+}
+
+function handleScopeClear() {
+  preferencesStore.setScope({ kind: 'library' })
+  showScopePicker.value = false
+}
+
+async function ensurePeopleLoaded() {
+  if (people.value.length > 0) return
+  try {
+    isLoadingPeople.value = true
+    peopleError.value = null
+    people.value = await fetchPeople()
+  } catch (e) {
+    console.error(e)
+    peopleError.value = e instanceof Error ? e.message : 'Failed to load people'
+  } finally {
+    isLoadingPeople.value = false
+  }
+}
+
+async function openPersonPicker() {
+  await ensurePeopleLoaded()
+  showPersonPicker.value = true
+}
+
+function closePersonPicker() {
+  showPersonPicker.value = false
+}
+
+function handlePersonSelect(personId: string) {
+  preferencesStore.setSelectedPerson(personId)
+  showPersonPicker.value = false
+}
+
+function handlePersonClear() {
+  preferencesStore.setSelectedPerson(null)
+  showPersonPicker.value = false
 }
 
 async function ensureAlbumsLoaded() {
@@ -115,8 +201,34 @@ watch(
   }
 )
 
+// Scope changes reset the flow and reload from the scoped feed.
+watch(
+  () => preferencesStore.scope,
+  async () => {
+    await loadInitialAsset()
+  }
+)
+
+// Person selection resets the flow and reloads from the person-scoped feed.
+watch(
+  () => preferencesStore.selectedPersonId,
+  async () => {
+    await loadInitialAsset()
+  }
+)
+
+// Skip-videos changes the feed composition (videos included or not): reload
+// so the feed and the review-progress total reflect the new filter.
+watch(
+  () => uiStore.skipVideos,
+  async () => {
+    await loadInitialAsset()
+  }
+)
+
 onMounted(() => {
   loadInitialAsset()
+  ensurePeopleLoaded()
   window.addEventListener('keydown', handleKeydown)
 })
 
@@ -129,7 +241,13 @@ onUnmounted(() => {
   <div class="viewport-fit flex flex-col"
     :class="uiStore.isDarkMode ? 'bg-black text-white' : 'bg-white text-black'"
   >
-    <AppHeader />
+    <AppHeader
+      :scope-label="scopeLabel"
+      :person-label="personLabel"
+      :review-total="reviewTotal"
+      @open-scope-picker="openScopePicker"
+      @open-person-picker="openPersonPicker"
+    />
 
     <!-- Main content -->
     <main class="flex-1 flex flex-col px-4 safe-area-bottom min-h-0 gap-3 overflow-hidden">
@@ -166,6 +284,7 @@ onUnmounted(() => {
           <div v-if="currentAsset" class="w-full h-full max-w-4xl max-h-full">
             <SwipeCard
               :asset="currentAsset"
+              :person-name="selectedPersonName"
               @keep="keepPhoto"
               @delete="deletePhoto"
             />
@@ -246,6 +365,27 @@ onUnmounted(() => {
       @close="closeAlbumPicker"
       @select="handleAlbumSelected"
       @assign-hotkey="handleAssignHotkey"
+    />
+
+    <ReviewScopePicker
+      :open="showScopePicker"
+      :albums="albums"
+      :loading="isLoadingAlbums"
+      :error="albumsError"
+      @close="closeScopePicker"
+      @apply="handleScopeApply"
+      @clear="handleScopeClear"
+    />
+
+    <PersonPicker
+      :open="showPersonPicker"
+      :people="people"
+      :loading="isLoadingPeople"
+      :error="peopleError"
+      :thumbnail-url-fn="getPersonThumbnailUrl"
+      @close="closePersonPicker"
+      @select="handlePersonSelect"
+      @clear="handlePersonClear"
     />
   </div>
 </template>

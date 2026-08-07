@@ -53,4 +53,26 @@ describe('reviewed store', () => {
     const keys = Object.keys(localStorage).filter((k) => k.startsWith('immich-swipe-reviewed'))
     expect(keys.length).toBe(1)
   })
+
+  it('exposes reviewedCount as kept + deleted sizes', () => {
+    const auth = useAuthStore()
+    auth.immichServerUrl = 'http://server-a'
+    auth.currentUserName = 'Alice'
+
+    const reviewed = useReviewedStore()
+    expect(reviewed.reviewedCount).toBe(0)
+
+    reviewed.markReviewed('a', 'keep')
+    expect(reviewed.reviewedCount).toBe(1)
+
+    reviewed.markReviewed('b', 'delete')
+    expect(reviewed.reviewedCount).toBe(2)
+
+    // Same decision twice must not double count
+    reviewed.markReviewed('b', 'delete')
+    expect(reviewed.reviewedCount).toBe(2)
+
+    reviewed.unmarkReviewed('a')
+    expect(reviewed.reviewedCount).toBe(1)
+  })
 })

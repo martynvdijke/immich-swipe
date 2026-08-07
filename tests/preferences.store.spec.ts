@@ -57,4 +57,57 @@ describe('preferences store', () => {
     const keys = Object.keys(localStorage).filter((k) => k.startsWith('immich-swipe-preferences'))
     expect(keys.length).toBe(2)
   })
+
+  it('defaults scope to library and selectedPersonId to null', () => {
+    const prefs = usePreferencesStore()
+    expect(prefs.scope).toEqual({ kind: 'library' })
+    expect(prefs.selectedPersonId).toBeNull()
+  })
+
+  it('persists review scope per namespace', async () => {
+    const auth = useAuthStore()
+    auth.immichServerUrl = 'http://server-a'
+    auth.currentUserName = 'Alice'
+
+    const prefs = usePreferencesStore()
+    prefs.setScope({ kind: 'album', albumId: 'album-x' })
+    await nextTick()
+
+    const key = Object.keys(localStorage).find((k) => k.startsWith('immich-swipe-preferences'))
+    const stored = JSON.parse(localStorage.getItem(key || '') || '{}')
+    expect(stored.scope).toEqual({ kind: 'album', albumId: 'album-x' })
+
+    prefs.setScope({ kind: 'dateRange', from: '2024-01-01', to: '2024-12-31' })
+    prefs.setScope({ kind: 'favorites' })
+    await nextTick()
+    const stored2 = JSON.parse(localStorage.getItem(key || '') || '{}')
+    expect(stored2.scope).toEqual({ kind: 'favorites' })
+  })
+
+  it('rehydrates scope and selectedPersonId from storage on a fresh store', async () => {
+    const auth = useAuthStore()
+    auth.immichServerUrl = 'http://server-a'
+    auth.currentUserName = 'Alice'
+    const prefs = usePreferencesStore()
+    prefs.setScope({ kind: 'favorites' })
+    prefs.setSelectedPerson('person-9')
+    await nextTick()
+
+    // Fresh pinia re-reads the persisted payload
+    setActivePinia(createPinia())
+    const auth2 = useAuthStore()
+    auth2.immichServerUrl = 'http://server-a'
+    auth2.currentUserName = 'Alice'
+    const prefs2 = usePreferencesStore()
+    expect(prefs2.scope).toEqual({ kind: 'favorites' })
+    expect(prefs2.selectedPersonId).toBe('person-9')
+  })
+
+  it('clears selectedPersonId via setSelectedPerson(null)', () => {
+    const prefs = usePreferencesStore()
+    prefs.setSelectedPerson('person-1')
+    expect(prefs.selectedPersonId).toBe('person-1')
+    prefs.setSelectedPerson(null)
+    expect(prefs.selectedPersonId).toBeNull()
+  })
 })

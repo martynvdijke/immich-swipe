@@ -4,7 +4,21 @@ import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useReviewedStore } from '@/stores/reviewed'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+
+const props = defineProps<{
+  /** Human-readable label of the active review scope; empty = library feed. */
+  scopeLabel?: string
+  /** Human-readable label of the selected person; empty = everyone. */
+  personLabel?: string
+  /** Total reviewable assets in the active feed; null/0 hides the progress bar. */
+  reviewTotal?: number | null
+}>()
+
+const emit = defineEmits<{
+  openScopePicker: []
+  openPersonPicker: []
+}>()
 
 const uiStore = useUiStore()
 const authStore = useAuthStore()
@@ -12,6 +26,20 @@ const preferencesStore = usePreferencesStore()
 const reviewedStore = useReviewedStore()
 const router = useRouter()
 const showResetModal = ref(false)
+
+const hasActiveScope = computed(() => props.scopeLabel != null && props.scopeLabel.length > 0)
+const hasActivePerson = computed(() => props.personLabel != null && props.personLabel.length > 0)
+
+// Review progress: hidden when the total is unknown or zero; capped at 100%.
+const total = computed(() => props.reviewTotal ?? 0)
+const progressPercent = computed(() => {
+  if (total.value <= 0) return 0
+  return Math.min(100, Math.round((reviewedStore.reviewedCount / total.value) * 100))
+})
+const showProgress = computed(() => total.value > 0)
+const libraryReviewed = computed(
+  () => showProgress.value && reviewedStore.reviewedCount >= total.value
+)
 
 function handleLogout() {
   authStore.logout()
@@ -111,6 +139,62 @@ function confirmResetReviewed() {
         </span>
       </button>
 
+      <!-- Scope button -->
+      <button
+        @click="emit('openScopePicker')"
+        class="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium border transition-colors"
+        :class="hasActiveScope
+          ? 'bg-purple-600 border-purple-500 text-white'
+          : uiStore.isDarkMode
+            ? 'border-gray-700 text-gray-300 hover:bg-gray-800'
+            : 'border-gray-300 text-gray-600 hover:bg-gray-100'"
+        :aria-pressed="hasActiveScope"
+        aria-label="Review scope"
+        title="Review scope"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+        </svg>
+        <span>Scope</span>
+      </button>
+
+      <!-- Active scope badge -->
+      <span
+        v-if="hasActiveScope"
+        class="px-2 py-0.5 text-xs rounded-full font-medium"
+        :class="uiStore.isDarkMode ? 'bg-purple-900 text-purple-200' : 'bg-purple-100 text-purple-700'"
+      >
+        {{ scopeLabel }}
+      </span>
+
+      <!-- Person button -->
+      <button
+        @click="emit('openPersonPicker')"
+        class="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium border transition-colors"
+        :class="hasActivePerson
+          ? 'bg-cyan-600 border-cyan-500 text-white'
+          : uiStore.isDarkMode
+            ? 'border-gray-700 text-gray-300 hover:bg-gray-800'
+            : 'border-gray-300 text-gray-600 hover:bg-gray-100'"
+        :aria-pressed="hasActivePerson"
+        aria-label="Review person"
+        title="Review person"
+      >
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+        </svg>
+        <span>Person</span>
+      </button>
+
+      <!-- Active person badge -->
+      <span
+        v-if="hasActivePerson"
+        class="px-2 py-0.5 text-xs rounded-full font-medium"
+        :class="uiStore.isDarkMode ? 'bg-cyan-900 text-cyan-200' : 'bg-cyan-100 text-cyan-700'"
+      >
+        {{ personLabel }}
+      </span>
+
       <!-- Skip videos toggle -->
       <button
         @click="uiStore.toggleSkipVideos()"
@@ -208,6 +292,28 @@ function confirmResetReviewed() {
       </button>
     </div>
   </header>
+
+  <!-- Review progress -->
+  <div v-if="showProgress" class="px-4 py-1.5 max-w-4xl mx-auto w-full">
+    <div class="flex items-center gap-2">
+      <div class="flex-1 h-1.5 rounded-full bg-gray-200 dark:bg-gray-800 overflow-hidden">
+        <div
+          class="h-full rounded-full transition-all duration-300"
+          :class="libraryReviewed ? 'bg-green-500' : 'bg-blue-500'"
+          :style="{ width: progressPercent + '%' }"
+        ></div>
+      </div>
+      <span
+        class="text-xs tabular-nums whitespace-nowrap"
+        :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-600'"
+      >
+        {{ reviewedStore.reviewedCount }} / {{ total }}
+      </span>
+      <span v-if="libraryReviewed" class="text-xs font-semibold text-green-500 whitespace-nowrap">
+        Library reviewed ✓
+      </span>
+    </div>
+  </div>
 
   <div
     v-if="showResetModal"

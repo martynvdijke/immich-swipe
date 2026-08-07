@@ -44,11 +44,35 @@ export interface ImmichAlbum {
   albumThumbnailAssetId?: string
 }
 
+export interface ImmichPerson {
+  id: string
+  name: string
+  thumbnailPath?: string | null
+  isHidden?: boolean
+}
+
+/**
+ * The active review-feed scope. Exactly one dimension is selected at a time;
+ * `library` means the unfiltered feed. Date ranges use local `from`/`to`
+ * dates, mapped to Immich's `takenAfter`/`takenBefore` filter fields when
+ * building search requests.
+ */
+export type ReviewScope =
+  | { kind: 'library' }
+  | { kind: 'album'; albumId: string }
+  | { kind: 'dateRange'; from: string; to: string }
+  | { kind: 'favorites' }
+
 export interface MetadataSearchRequest {
   page?: number
   size?: number
   order?: 'asc' | 'desc'
   type?: 'IMAGE' | 'VIDEO'
+  albumId?: string
+  isFavorite?: boolean
+  takenAfter?: string
+  takenBefore?: string
+  personIds?: string[]
 }
 
 export interface MetadataSearchResponse {

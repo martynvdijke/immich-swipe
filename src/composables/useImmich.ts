@@ -7,6 +7,7 @@ import router from '@/router'
 import type {
   ImmichAsset,
   ImmichAlbum,
+  ImmichPerson,
   MetadataSearchRequest,
   MetadataSearchResponse,
 } from '@/types/immich'
@@ -27,11 +28,25 @@ export function useImmich() {
   const RANDOM_MAX_ATTEMPTS = 20
 
   const albumsCache = ref<ImmichAlbum[] | null>(null)
+  const peopleCache = ref<ImmichPerson[] | null>(null)
 
   const chronologicalQueue = ref<ImmichAsset[]>([])
   const chronologicalPage = ref<number>(1)
   const chronologicalHasMore = ref(true)
   const isFetchingChronological = ref(false)
+
+  // Scoped random-mode paging: when the active scope is not `library`,
+  // /search/random cannot apply the filters reliably, so we page through
+  // /search/metadata instead and pick a reviewable candidate client-side.
+  const scopedRandomPage = ref<number>(1)
+  const scopedRandomHasMore = ref(true)
+
+  // Review-progress: total reviewable assets in the active feed (from
+  // /search/metadata `assets.total`), and a counter that re-fetches the total
+  // periodically as the user reviews.
+  const reviewTotal = ref<number | null>(null)
+  const REVIEW_TOTAL_REFRESH_INTERVAL = 25
+  let reviewActionCounter = 0
 
   type ReviewAction = {
     asset: ImmichAsset
@@ -51,6 +66,8 @@ export function useImmich() {
     chronologicalQueue.value = []
     chronologicalPage.value = 1
     chronologicalHasMore.value = true
+    scopedRandomPage.value = 1
+    scopedRandomHasMore.value = true
     nextAsset.value = null
     pendingAssets.value = []
     actionHistory.value = []
@@ -60,6 +77,7 @@ export function useImmich() {
     () => [authStore.immichServerUrl, authStore.currentUserName],
     () => {
       albumsCache.value = null
+      peopleCache.value = null
       resetReviewFlow()
     }
   )
@@ -161,12 +179,33 @@ export function useImmich() {
     }
   }
 
+  // Build the metadata-search filter fields for the active scope. Isolated in
+  // one place so a rename of Immich's filter fields is a one-line change.
+  function buildSearchFilters(): MetadataSearchRequest {
+    const filters: MetadataSearchRequest = {}
+    const scope = preferencesStore.scope
+    if (scope.kind === 'album') {
+      filters.albumId = scope.albumId
+    } else if (scope.kind === 'dateRange') {
+      filters.takenAfter = scope.from
+      filters.takenBefore = scope.to
+    } else if (scope.kind === 'favorites') {
+      filters.isFavorite = true
+    }
+    const personId = preferencesStore.selectedPersonId
+    if (personId) {
+      filters.personIds = [personId]
+    }
+    return filters
+  }
+
   async function fetchChronologicalBatch(): Promise<{ items: ImmichAsset[]; hasMore: boolean }> {
     const order = preferencesStore.reviewOrder === 'chronological-desc' ? 'desc' : 'asc'
     const body: MetadataSearchRequest = {
       order,
       page: chronologicalPage.value,
       size: CHRONO_PAGE_SIZE,
+      ...buildSearchFilters(),
     }
     if (uiStore.skipVideos) {
       body.type = 'IMAGE'
@@ -183,8 +222,72 @@ export function useImmich() {
     return { items, hasMore }
   }
 
-  async function fetchNextChronologicalAsset(): Promise<ImmichAsset | null> {
-    while (chronologicalQueue.value.length === 0 && chronologicalHasMore.value) {
+  // Random-mode fallback for scoped feeds: page through /search/metadata and
+  // pick the first reviewable candidate, re-paging when candidates are
+  // already reviewed or filtered out.
+  async function fetchScopedRandomAsset(): Promise<ImmichAsset | null> {
+    while (scopedRandomHasMore.value) {
+      const body: MetadataSearchRequest = {
+        order: 'asc',
+        page: scopedRandomPage.value,
+        size: CHRONO_PAGE_SIZE,
+        ...buildSearchFilters(),
+      }
+      if (uiStore.skipVideos) {
+        body.type = 'IMAGE'
+      }
+
+      const response = await apiRequest<MetadataSearchResponse>('/search/metadata', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+
+      const items = response?.assets?.items ?? []
+      scopedRandomHasMore.value = response?.assets?.nextPage != null
+      scopedRandomPage.value += 1
+
+      const candidate = items.find(isReviewable)
+      if (candidate) return candidate
+    }
+
+    return null
+  }
+
+  // Fetch the total number of reviewable assets in the active feed. The
+  // `total` from /search/metadata reflects the current filters (scope, person,
+  // skip-videos, order), so it matches what the user is actually reviewing.
+  async function fetchReviewTotal(): Promise<void> {
+    try {
+      const body: MetadataSearchRequest = {
+        size: 1,
+        ...buildSearchFilters(),
+      }
+      if (uiStore.skipVideos) {
+        body.type = 'IMAGE'
+      }
+
+      const response = await apiRequest<MetadataSearchResponse>('/search/metadata', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+
+      const total = response?.assets?.total
+      reviewTotal.value = typeof total === 'number' ? total : null
+    } catch (e) {
+      // Non-fatal: progress is hidden when the total is unknown.
+      console.error('Failed to fetch review total:', e)
+    }
+  }
+
+  // Tracks review actions and periodically refreshes the review total.
+  function trackReviewAction(): void {
+    reviewActionCounter += 1
+    if (reviewActionCounter % REVIEW_TOTAL_REFRESH_INTERVAL === 0) {
+      fetchReviewTotal()
+    }
+  }
+
+  async function fetchNextChronologicalAsset(): Promise<ImmichAsset | null> {    while (chronologicalQueue.value.length === 0 && chronologicalHasMore.value) {
       await loadChronologicalBatch()
     }
 
@@ -227,6 +330,11 @@ export function useImmich() {
     if (preferencesStore.reviewOrder !== 'random') {
       return fetchNextChronologicalAsset()
     }
+    const hasActiveFilter =
+      preferencesStore.scope.kind !== 'library' || preferencesStore.selectedPersonId != null
+    if (hasActiveFilter) {
+      return fetchScopedRandomAsset()
+    }
     return fetchRandomAsset()
   }
 
@@ -239,6 +347,9 @@ export function useImmich() {
       if (resetFlow) {
         resetReviewFlow()
       }
+      // Refresh the review-progress total whenever the feed (re)loads. Fired
+      // before the asset fetch so a failing/empty feed still refreshes it.
+      fetchReviewTotal()
       currentAsset.value = await fetchNextAsset()
 
       if (currentAsset.value) {
@@ -349,6 +460,22 @@ export function useImmich() {
     return albums
   }
 
+  // Fetch the person list once per session and cache it (mirrors albumsCache).
+  async function fetchPeople(force: boolean = false): Promise<ImmichPerson[]> {
+    if (peopleCache.value && !force) {
+      return peopleCache.value
+    }
+    const people = await apiRequest<ImmichPerson[]>('/people')
+    peopleCache.value = people
+    return people
+  }
+
+  // Person thumbnail URL (served through the Go backend proxy). Callers must
+  // fall back gracefully — faces may be unrecognized and thumbnails unavailable.
+  function getPersonThumbnailUrl(personId: string): string {
+    return `/api/people/${personId}/thumbnail?size=preview`
+  }
+
   async function addAssetToAlbum(albumId: string, assetId: string): Promise<void> {
     await apiRequest(`/albums/${albumId}/assets`, {
       method: 'PUT',
@@ -400,6 +527,7 @@ export function useImmich() {
     actionHistory.value.push({ asset: assetToKeep, type: 'keep' })
     reviewedStore.markReviewed(assetToKeep.id, 'keep')
     uiStore.incrementKept()
+    trackReviewAction()
     uiStore.toast('Photo kept ✓', 'success', 1500)
     moveToNextAsset()
   }
@@ -418,6 +546,7 @@ export function useImmich() {
       })
       reviewedStore.markReviewed(assetToKeep.id, 'keep')
       uiStore.incrementKept()
+      trackReviewAction()
       uiStore.toast(`Added to ${album.albumName}`, 'success', 1800)
       moveToNextAsset()
     } catch (e) {
@@ -446,6 +575,7 @@ export function useImmich() {
         actionHistory.value.push({ asset: updatedAsset, type: 'keep' })
         reviewedStore.markReviewed(updatedAsset.id, 'keep')
         uiStore.incrementKept()
+        trackReviewAction()
         uiStore.toast('Favorited ✓', 'success', 1500)
         moveToNextAsset()
       } else {
@@ -468,6 +598,7 @@ export function useImmich() {
       actionHistory.value.push({ asset: assetToDelete, type: 'delete' })
       reviewedStore.markReviewed(assetToDelete.id, 'delete')
       uiStore.incrementDeleted()
+      trackReviewAction()
       uiStore.toast('Photo deleted', 'info', 1500)
       moveToNextAsset()
     } else {
@@ -523,6 +654,7 @@ export function useImmich() {
     currentAsset,
     nextAsset,
     error,
+    reviewTotal,
     testConnection,
     loadInitialAsset,
     keepPhoto,
@@ -535,6 +667,8 @@ export function useImmich() {
     getAssetOriginalUrl,
     getAuthHeaders,
     fetchAlbums,
+    fetchPeople,
+    getPersonThumbnailUrl,
     addAssetToAlbum,
   }
 }

@@ -63,6 +63,10 @@ export const useReviewedStore = defineStore('reviewed', () => {
     return kept.value.has(id) || deleted.value.has(id)
   }
 
+  // Number of assets already reviewed (kept + deleted) in the current
+  // server:user scope. Drives the review-progress indicator.
+  const reviewedCount = computed(() => kept.value.size + deleted.value.size)
+
   function getDecision(id: string): ReviewDecision | null {
     if (kept.value.has(id)) return 'keep'
     if (deleted.value.has(id)) return 'delete'
@@ -117,5 +121,6 @@ export const useReviewedStore = defineStore('reviewed', () => {
     markReviewed,
     unmarkReviewed,
     resetReviewed,
+    reviewedCount,
   }
 })

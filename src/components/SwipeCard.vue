@@ -7,6 +7,8 @@ import type { ImmichAsset } from '@/types/immich'
 
 const props = defineProps<{
   asset: ImmichAsset
+  /** Name of the selected review person; shown as a badge on the card. */
+  personName?: string
 }>()
 
 const emit = defineEmits<{
@@ -268,6 +270,26 @@ const formattedDate = computed(() => {
     day: 'numeric',
   })
 })
+
+// Person badge: prefer the known selected person name; otherwise use the
+// asset's own people array as best-effort enrichment (shape varies by Immich
+// version, so only objects with a string `name` field are considered).
+const personBadgeLabel = computed(() => {
+  if (props.personName) return props.personName
+  const names: string[] = []
+  for (const person of props.asset.people ?? []) {
+    if (
+      person &&
+      typeof person === 'object' &&
+      'name' in person &&
+      typeof (person as { name: unknown }).name === 'string'
+    ) {
+      const name = (person as { name: string }).name
+      if (name && !names.includes(name)) names.push(name)
+    }
+  }
+  return names.join(', ')
+})
 </script>
 
 <template>
@@ -342,6 +364,14 @@ const formattedDate = computed(() => {
         </div>
       </div>
     </div>
+
+    <!-- Person badge -->
+    <span
+      v-if="personBadgeLabel"
+      class="absolute top-3 left-3 z-10 max-w-[70%] px-3 py-1 rounded-full text-xs font-medium bg-black/50 text-white backdrop-blur-sm truncate pointer-events-none"
+    >
+      {{ personBadgeLabel }}
+    </span>
 
     <!-- media info -->
     <div
