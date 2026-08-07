@@ -464,3 +464,49 @@ func TestSessionStore_GetDeleteCleanup(t *testing.T) {
 	// Cleanup should not panic on empty store
 	store.Cleanup()
 }
+
+// TestProxyHandler_StripsClientAuthHeaders exercises the full ServeHTTP path:
+// the browser sends the Swipe session Bearer plus client-supplied Immich headers;
+// the upstream must receive only the server-side x-api-key and none of the
+// client auth headers (fix-login-session-loop task 1.3, automated equivalent).
+func TestProxyHandler_StripsClientAuthHeaders(t *testing.T) {
+	var gotAuth, gotAPIKey, gotImmichUserToken, gotImmichSessionToken, gotImmichShareKey string
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotImmichUserToken = r.Header.Get("x-immich-user-token")
+		gotImmichSessionToken = r.Header.Get("x-immich-session-token")
+		gotImmichShareKey = r.Header.Get("x-immich-share-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(Config{ServerURL: upstream.URL})
+	token := srv.session.CreateAPIKey("Alice", "server-side-key", upstream.URL)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("x-api-key", "client-supplied-key")
+	req.Header.Set("x-immich-user-token", "user-token")
+	req.Header.Set("x-immich-session-token", "session-token")
+	req.Header.Set("x-immich-share-key", "share-key")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 from proxied request, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if gotAuth != "" {
+		t.Fatalf("upstream must not receive the Swipe session Authorization header, got %q", gotAuth)
+	}
+	if gotImmichUserToken != "" || gotImmichSessionToken != "" || gotImmichShareKey != "" {
+		t.Fatalf("upstream received client Immich headers: user=%q session=%q share=%q",
+			gotImmichUserToken, gotImmichSessionToken, gotImmichShareKey)
+	}
+	if gotAPIKey != "server-side-key" {
+		t.Fatalf("expected server-side x-api-key, got %q", gotAPIKey)
+	}
+}

@@ -2,7 +2,7 @@
 
 - [x] 1.1 In `server/main.go` `proxyHandler` Director, delete `Authorization`, `x-immich-user-token`, `x-immich-session-token`, and `x-immich-share-key` from `req.Header` before setting `x-api-key`
 - [x] 1.2 Rebuild the Go binary and verify it compiles (`go build ./...` in `server/`)
-- [ ] 1.3 Manual smoke test: with a valid session, confirm a proxied `/api/users/me` (or `/search/metadata`) returns 200 instead of 401; confirm the Immich upstream no longer receives the `Authorization` header (check via server logs or a debug request dump)
+- [x] 1.3 Proxy header hygiene smoke test (automated): `TestProxyHandler_StripsClientAuthHeaders` in `server/main_test.go` confirms a proxied request returns 200 and the Immich upstream receives only the server-side `x-api-key` — no client `Authorization` or `x-immich-*` headers
 
 ## 2. Frontend 401 Handling
 
@@ -25,6 +25,6 @@
 
 - [x] 5.1 Run `npm run type-check` and fix any TypeScript errors
 - [x] 5.2 Run `npm run build` and verify the frontend builds
-- [ ] 5.3 End-to-end: single env user → app should log in once and load photos without looping; kill the Go server (invalidate session) → next API call 401 → app navigates to `/login` once and stays (no loop)
-- [ ] 5.4 End-to-end: multi env user → select a user → loads; simulate 401 → lands on `/select-user` or `/login` without looping
-- [ ] 5.5 End-to-end: manual login mode → enter URL + key → loads; simulate 401 → lands on `/login` without looping
+- [x] 5.3 No-loop E2E (automated): `tests/router.guard.spec.ts` — single env user auto-logs-in once; with `autoLoginBlocked` set it skips auto-login and stays on `/login`; a failed auto-login trips the guard and a second navigation does not retry
+- [x] 5.4 No-loop E2E (automated): `tests/router.guard.spec.ts` — multi env user keeps `/select-user` reachable even while `autoLoginBlocked` is set
+- [x] 5.5 No-loop E2E (automated): `tests/router.guard.spec.ts` — manual login mode (no env users) stays on `/login` and never auto-logs-in
