@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/martynvdijke/immich-swipe/compare/v1.4.0...v1.5.0) (2026-08-08)
+
+
+### Features
+
+* add Umami analytics and OpenTelemetry browser tracing settings ([893c630](https://github.com/martynvdijke/immich-swipe/commit/893c6309c29cbd07b037f96359d9dd38be121baa))
+
 # [1.4.0](https://github.com/martynvdijke/immich-swipe/compare/v1.3.7...v1.4.0) (2026-08-07)
 
 
