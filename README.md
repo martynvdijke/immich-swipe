@@ -90,6 +90,51 @@ Behavior:
 
 Env API keys are optional. Households can skip them and use Immich email/password login instead.
 
+### Option D: Trmnl e-ink display (keep/delete stats)
+
+A Trmnl e-ink plugin in [`trmnl/`](trmnl/) turns any [Trmnl](https://usetrmnl.com) device into a wall display of your swipe statistics. The Go backend counts actions as they flow through its reverse proxy and exposes them on a public polling endpoint.
+
+**Install**
+
+1. Copy the contents of [`trmnl/`](trmnl/) (a `settings.yml` plus four Liquid layouts) into your own Trmnl plugin.
+2. Point the plugin's `polling_url` at your instance: `https://<host>/api/trmnl/stats`
+3. Set `refresh_interval` to how often the display should refresh (default `60` minutes).
+
+The endpoint is unauthenticated on purpose (Trmnl devices have no Immich session) and only exposes aggregate counters — no credentials or asset data.
+
+**What gets counted**
+
+| Action | Counted as |
+|---|---|
+| Delete (moves to trash) | `deleted` +1 per asset |
+| Undo delete (restore) | `deleted` −1 per asset |
+| Add to album | `kept` +1 per asset |
+| Favorite | `kept` +1 |
+| Plain swipe-keep | **not counted** (browser-only, no Immich request) |
+
+Counters are tracked per server/user and aggregated in the endpoint's `users` list.
+
+**Persistence**
+
+Counters live in memory by default and reset when the server restarts. Set `TRMNL_STATS_FILE` to persist them to a JSON file after every counted action:
+
+```bash
+TRMNL_STATS_FILE=/data/trmnl-stats.json
+```
+
+With Docker Compose, bind-mount a directory and point the variable into it:
+
+```yaml
+services:
+  immich-swipe:
+    volumes:
+      - ./data:/data
+    environment:
+      - TRMNL_STATS_FILE=/data/trmnl-stats.json
+```
+
+> **Single-instance assumption:** counters are local to one server instance. Do not run multiple replicas behind a load balancer or the totals will diverge.
+
 ### Option B: Immich account or API key login
 
 On `/login` you can choose:

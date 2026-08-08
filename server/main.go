@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -35,6 +36,7 @@ type Config struct {
 	ServerURL  string
 	ListenAddr string
 	StaticDir  string
+	StatsFile  string // optional TRMNL stats persistence path ("" = memory only)
 	Users      []UserConfig
 }
 
@@ -43,6 +45,7 @@ func loadConfig() Config {
 		ListenAddr: getEnv("LISTEN_ADDR", ":8080"),
 		StaticDir:  getEnv("STATIC_DIR", "./dist"),
 		ServerURL:  os.Getenv("IMMICH_SERVER_URL"),
+		StatsFile:  os.Getenv("TRMNL_STATS_FILE"),
 	}
 	for i := 1; ; i++ {
 		// Primary naming: IMMICH_API_KEY_<N>_NAME / IMMICH_API_KEY_<N>_KEY
@@ -181,14 +184,24 @@ func generateToken() string {
 type Server struct {
 	config    Config
 	session   *SessionStore
+	stats     *StatsStore
 	transport http.RoundTripper // optional instrumented transport for the reverse proxy
 }
 
 func NewServer(cfg Config) *Server {
-	return &Server{
+	s := &Server{
 		config:  cfg,
 		session: NewSessionStore(),
+		stats:   NewStatsStore(cfg.StatsFile),
 	}
+	// Restore persisted stats on startup when a stats file is configured.
+	// On any file error we log a warning and continue with in-memory only.
+	if cfg.StatsFile != "" {
+		if err := s.stats.LoadFromFile(cfg.StatsFile); err != nil {
+			log.Printf("Warning: cannot load stats file %s: %v (continuing in-memory)", cfg.StatsFile, err)
+		}
+	}
+	return s
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -206,6 +219,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case path == "/api/auth/config":
 		s.configHandler(w, r)
+
+	case path == "/api/trmnl/stats":
+		// Public Trmnl e-ink polling endpoint. Registered before the /api/
+		// proxy catch-all so it is served locally and never proxied to Immich.
+		s.trmnlStatsHandler(w, r)
 
 	case strings.HasPrefix(path, "/api/"):
 		s.authMiddleware(http.HandlerFunc(s.proxyHandler)).ServeHTTP(w, r)
@@ -239,9 +257,31 @@ func (s *Server) configHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"users":           userNames,
+		"users":            userNames,
 		"defaultServerUrl": s.config.ServerURL,
-		"version":         Version,
+		"version":          Version,
+	})
+}
+
+// ─── Trmnl Stats ───────────────────────────────────────────────────────────
+
+// trmnlStatsHandler serves the public Trmnl e-ink polling endpoint. It is
+// unauthenticated on purpose (Trmnl devices have no Immich session) and only
+// exposes aggregate keep/delete counters, never credentials or asset data.
+func (s *Server) trmnlStatsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	kept, deleted, users, updatedAt := s.stats.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"keptCount":    kept,
+		"deletedCount": deleted,
+		"totalCount":   kept + deleted,
+		"serverUrl":    s.config.ServerURL,
+		"updatedAt":    updatedAt.Format(time.RFC3339),
+		"users":        users,
 	})
 }
 
@@ -621,12 +661,136 @@ func sessionFromContext(ctx context.Context) *Session {
 
 // ─── Proxy ─────────────────────────────────────────────────────────────────
 
+// pendingStats holds counter deltas derived from a countable request body
+// before it is forwarded upstream. Deltas are applied only when the upstream
+// responds 2xx and at most once per request (design D1/D4).
+type pendingStats struct {
+	keptDelta    int
+	deletedDelta int
+	applied      bool
+}
+
+type pendingStatsKey struct{}
+
+// countRoute identifies which (method, path) pair maps to a stats counter.
+type countRoute int
+
+const (
+	countNone         countRoute = iota
+	countTrashDelete             // DELETE /api/assets            -> deleted += len(ids)
+	countTrashRestore            // POST  /api/trash/restore/assets -> deleted -= len(ids)
+	countAlbumAdd                // PUT   /api/albums/<id>/assets -> kept += len(ids)
+	countFavorite                // PUT   /api/assets/<id>        -> kept += 1 (isFavorite:true)
+)
+
+func classifyCountRoute(r *http.Request) countRoute {
+	switch {
+	case r.Method == http.MethodDelete && r.URL.Path == "/api/assets":
+		return countTrashDelete
+	case r.Method == http.MethodPost && r.URL.Path == "/api/trash/restore/assets":
+		return countTrashRestore
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/albums/") && strings.HasSuffix(r.URL.Path, "/assets"):
+		return countAlbumAdd
+	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/assets/"):
+		return countFavorite
+	default:
+		return countNone
+	}
+}
+
+// countRequestAndRewind inspects countable requests (design D4). For those it
+// reads the request body, parses the JSON, rewinds the body with
+// io.NopCloser so the upstream receives it byte-identical, and returns the
+// pending deltas. It returns nil for non-countable requests, malformed JSON,
+// and requests that must not change any counter (e.g. force:true deletes);
+// those are still forwarded untouched.
+func countRequestAndRewind(r *http.Request) *pendingStats {
+	route := classifyCountRoute(r)
+	if route == countNone {
+		return nil
+	}
+
+	// Read and rewind the body unconditionally so upstream behavior is
+	// unchanged regardless of whether we can parse it.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+
+	var payload struct {
+		IDs        []string `json:"ids"`
+		Force      *bool    `json:"force"`
+		IsFavorite *bool    `json:"isFavorite"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil // malformed bodies never change counters
+	}
+
+	pending := &pendingStats{}
+	switch route {
+	case countTrashDelete:
+		// Hard deletes (force:true) are not swipe trashes; ignore them.
+		if payload.Force != nil && *payload.Force {
+			return nil
+		}
+		pending.deletedDelta = len(payload.IDs)
+	case countTrashRestore:
+		pending.deletedDelta = -len(payload.IDs)
+	case countAlbumAdd:
+		pending.keptDelta = len(payload.IDs)
+	case countFavorite:
+		if payload.IsFavorite != nil && *payload.IsFavorite {
+			pending.keptDelta = 1
+		}
+	}
+	if pending.keptDelta == 0 && pending.deletedDelta == 0 {
+		return nil
+	}
+	return pending
+}
+
+// applyPendingCounts is the proxy ModifyResponse hook: it applies pending
+// counter deltas only when the upstream responded 2xx. The pending state is
+// marked applied on every invocation so a single request is never counted
+// twice, even if the hook were to fire more than once (design D1).
+func (s *Server) applyPendingCounts(resp *http.Response) {
+	if resp == nil || resp.Request == nil {
+		return
+	}
+	ctx := resp.Request.Context()
+	pending, _ := ctx.Value(pendingStatsKey{}).(*pendingStats)
+	if pending == nil || pending.applied {
+		return
+	}
+	pending.applied = true
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return
+	}
+	session := sessionFromContext(ctx)
+	if session == nil {
+		return
+	}
+	if pending.keptDelta != 0 {
+		s.stats.IncrementKept(session.ServerURL, session.UserName, pending.keptDelta)
+	}
+	if pending.deletedDelta != 0 {
+		s.stats.IncrementDeleted(session.ServerURL, session.UserName, pending.deletedDelta)
+	}
+}
+
 func (s *Server) proxyHandler(w http.ResponseWriter, r *http.Request) {
 	session := sessionFromContext(r.Context())
 	if session == nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no session"})
 		return
 	}
+
+	// Inspect countable requests (design D4) and rewind the body so the
+	// upstream receives it byte-identical.
+	pending := countRequestAndRewind(r)
 
 	targetRaw := strings.TrimRight(session.ServerURL, "/")
 	target, err := url.Parse(targetRaw)
@@ -645,10 +809,20 @@ func (s *Server) proxyHandler(w http.ResponseWriter, r *http.Request) {
 			applySessionAuth(req, session)
 		},
 		Transport: s.transport,
+		ModifyResponse: func(resp *http.Response) error {
+			// Success-gated stats counting (design D1).
+			s.applyPendingCounts(resp)
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("Proxy error: %v", err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream request failed"})
 		},
+	}
+
+	if pending != nil {
+		ctx := context.WithValue(r.Context(), pendingStatsKey{}, pending)
+		r = r.WithContext(ctx)
 	}
 
 	proxy.ServeHTTP(w, r)
@@ -773,6 +947,11 @@ func main() {
 		log.Printf("  Users configured: %d", len(cfg.Users))
 		if cfg.ServerURL != "" {
 			log.Printf("  Default Immich URL: %s", cfg.ServerURL)
+		}
+		if cfg.StatsFile != "" {
+			log.Printf("  Trmnl stats persistence: %s", cfg.StatsFile)
+		} else {
+			log.Printf("  Trmnl stats: in-memory only (no TRMNL_STATS_FILE)")
 		}
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)

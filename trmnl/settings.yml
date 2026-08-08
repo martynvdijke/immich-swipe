@@ -1,0 +1,50 @@
+---
+strategy: polling
+no_screen_padding: 'no'
+dark_mode: 'no'
+static_data: ''
+polling_verb: get
+framework_version: 2.3.7
+serverless_language:
+polling_url: "https://<your-immich-swipe-host>/api/trmnl/stats"
+polling_headers: ''
+polling_body: ''
+id:
+oauth_enabled: 'false'
+oauth_pkce_enabled: 'no'
+oauth_authorize_url: ''
+oauth_token_url: ''
+oauth_scopes: ''
+oauth_scope_separator: ''
+oauth_refresh_url: ''
+oauth_auth_params: ''
+oauth_token_headers: ''
+oauth_token_site: ''
+oauth_token_params: ''
+oauth_token_request_auth_method: ''
+oauth_body_format: ''
+oauth_token_response_metadata: ''
+oauth_authorization_method: ''
+oauth_refresh_params: ''
+oauth_token_field_name: ''
+oauth_expiry_field_name: ''
+oauth_expiry_strategy: ''
+oauth_fixed_expiry_ms: ''
+custom_fields:
+- keyname: bio
+  name: About This Plugin
+  category: other
+  field_type: author_bio
+  description: Wall display of your photo-swipe statistics - how many photos you kept and deleted while swiping through your Immich library.
+  github_url: https://github.com/your-name/immich-swipe
+  learn_more_url: https://<your-immich-swipe-host>/
+  email_address:
+- keyname: url
+  field_type: url
+  name: Address of your Immich Swipe instance
+  description: URL
+  placeholder: https://swipe.example.com
+  help_text: Please include http:// or https:// and point the polling_url above to <host>/api/trmnl/stats
+name: Immich Swipe Stats
+description: Live keep/delete counters from your photo-swiping sessions
+refresh_interval: 60

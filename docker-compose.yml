@@ -23,6 +23,11 @@ services:
       - IMMICH_API_KEY_4_KEY=${IMMICH_API_KEY_4_KEY:-}
       - IMMICH_API_KEY_5_NAME=${IMMICH_API_KEY_5_NAME:-}
       - IMMICH_API_KEY_5_KEY=${IMMICH_API_KEY_5_KEY:-}
+      # Trmnl e-ink stats persistence (optional). Set TRMNL_STATS_FILE to a
+      # path on a mounted volume to survive container restarts, e.g.:
+      #   volumes: [ "./data:/data" ]
+      #   TRMNL_STATS_FILE=/data/trmnl-stats.json
+      - TRMNL_STATS_FILE=${TRMNL_STATS_FILE:-}
       # OpenTelemetry (OTLP) — leave unset to run without observability
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - OTEL_EXPORTER_OTLP_PROTOCOL=${OTEL_EXPORTER_OTLP_PROTOCOL:-}

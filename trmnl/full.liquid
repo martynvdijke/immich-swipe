@@ -1,0 +1,62 @@
+<div class="layout layout--col gap">
+  <div class="grid grid--cols-1">
+    <div class="item">
+      <div class="meta"></div>
+      <div class="content">
+        <span class="label">Photos swiped</span>
+      </div>
+    </div>
+  </div>
+  <div class="hr"></div>
+  <div class="grid grid--cols-2">
+    <div class="col col--start gap">
+      <div class="item">
+        <div class="meta"></div>
+        <div class="content">
+          <span class="label">Kept</span>
+          <span class="value value--large">{{ IDX_0.keptCount }}</span>
+        </div>
+      </div>
+      <div class="item">
+        <div class="meta"></div>
+        <div class="content">
+          <span class="label">Deleted</span>
+          <span class="value value--large">{{ IDX_0.deletedCount }}</span>
+        </div>
+      </div>
+    </div>
+    <div class="col col--center">
+      <div class="item">
+        <div class="meta"></div>
+        <div class="content">
+          <span class="label">Total</span>
+          <span class="value value--medium">{{ IDX_0.totalCount }}</span>
+        </div>
+      </div>
+      <div class="item">
+        <div class="meta"></div>
+        <div class="content">
+          <span class="label">Kept {{ IDX_0.keptCount }} · Deleted {{ IDX_0.deletedCount }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="hr"></div>
+  {% if IDX_0.users.size > 1 %}
+  <div class="grid grid--cols-1">
+    {% for user in IDX_0.users %}
+    <div class="item">
+      <div class="meta"></div>
+      <div class="content">
+        <span class="label">{{ user.userName }}</span>
+        <span class="value value--small">{{ user.keptCount }} kept · {{ user.deletedCount }} deleted</span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="title_bar">
+  <span class="title">Immich Swipe Stats</span>
+</div>
