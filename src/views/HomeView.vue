@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useImmich } from '@/composables/useImmich'
 import { useUiStore } from '@/stores/ui'
 import { usePreferencesStore } from '@/stores/preferences'
+import { trackEvent } from '@/composables/useUmami'
+import { recordPersonFilter } from '@/composables/useOtel'
 import type { ImmichAlbum, ImmichPerson, ReviewScope } from '@/types/immich'
 import AppHeader from '@/components/AppHeader.vue'
 import SwipeCard from '@/components/SwipeCard.vue'
@@ -149,12 +151,19 @@ function closePersonPicker() {
 }
 
 function handlePersonSelect(personId: string) {
+  const person = people.value.find((p) => p.id === personId)
+  const personName = person?.name || personId
   preferencesStore.setSelectedPerson(personId)
+  trackEvent('swipe.person_filter', { personName })
+  recordPersonFilter(personName)
   showPersonPicker.value = false
 }
 
 function handlePersonClear() {
+  const previousName = personLabel.value
   preferencesStore.setSelectedPerson(null)
+  trackEvent('swipe.person_filter', { personName: previousName || 'none' })
+  recordPersonFilter(previousName || 'none')
   showPersonPicker.value = false
 }
 

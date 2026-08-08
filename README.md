@@ -30,6 +30,7 @@ Swipe-review your Immich library: right = keep, left = trash. Like a dating app,
 - Undo (Ctrl/⌘+Z or ↑)
 - Reviewed cache + stats persisted per server/user
 - Preloads the next asset
+- Optional self-hosted analytics (Umami) + OpenTelemetry browser traces/stats, configured in-app under **Settings**
 
 ## Controls
 
@@ -109,6 +110,46 @@ From the multi-user picker (`/select-user`), use **Sign in with Immich account**
 
 In SPA-only / GitHub Pages mode (no Go backend), API keys are stored in `localStorage` and the browser calls Immich directly. Credential login requires the Go backend.
 
+## Observability (Settings)
+
+The app ships with **no analytics or tracing enabled by default** — nothing is sent anywhere until you configure it. Open **Settings** (gear icon in the header) to configure two independent integrations, both persisted in `localStorage` per server/user and applied immediately (no reload).
+
+### Umami (self-hosted analytics)
+
+1. Create a website in your Umami instance and copy its **Website ID**.
+2. In Settings, enable Umami and enter your Umami server URL (`https://umami.example.com`).
+3. Optional **Host URL** (`data-host-url`) if your Umami dashboard runs on a different origin.
+
+The Umami script (`<server>/script.js`) is only injected while enabled. Page views are sent on every route change, plus custom events: `swipe.keep`, `swipe.delete`, `swipe.undo`, `swipe.album_add`, `swipe.person_filter` (each carrying the asset ID/type, album or person name). Events never throw — if the script fails to load the app keeps working normally (status hint shown in Settings).
+
+### OpenTelemetry (traces + stats)
+
+1. Point an OTLP/HTTP collector at the app (see CORS note below).
+2. In Settings, enable OpenTelemetry and enter your collector endpoint, e.g. `https://collector.example.com:4318`.
+3. Set the trace **sampling** (0–100%). Default 100% samples every trace root; 0% disables traces but metrics are still reported.
+
+Browser-side instrumentation sends:
+- **Traces** to `<endpoint>/v1/traces` — every `/api/*` request (including thumbnails and preloads) gets a span; a `swipe.review_action` span is emitted per keep/delete/undo/album action.
+- **Metrics** to `<endpoint>/v1/metrics` every 30s — counters `swipe.kept`, `swipe.deleted`, `swipe.undo`, `swipe.album_added` (attrs: `assetType`, `personFiltered`, `albumName`) and `swipe.person_filter` (attr: `personName`).
+
+Service name is `immich-swipe-web`. Trace payloads contain asset IDs and URLs, so only send them to collectors you trust.
+
+**Collector CORS:** browsers enforce CORS on OTLP/HTTP exports. Configure your collector to allow the origin of this app, e.g. for the OTLP HTTP receiver:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        cors:
+          allowed_origins:
+            - "https://your-app.example.com"
+```
+
+**Browser-only scope:** the server's own OTel (traces/metrics for the Go backend) is separate and stays configured via `OTEL_*` env vars (see `env.example`). The Settings page only controls browser-side instrumentation.
+
+**Version pinning:** the OTel JS SDK packages are pinned to exact versions in `package.json` (the instrumentation/exporter packages use a different release line than the core SDK). Bump them deliberately as a set.
+
 ## Architecture
 
 The app uses a **Go backend** that serves static files and proxies all Immich API requests:
@@ -135,6 +176,7 @@ The frontend (Vue 3 SPA) authenticates via the backend and all API calls go thro
 - `immich-swipe-stats:<server>:<user>` (keep/delete counters)
 - `immich-swipe-reviewed:<server>:<user>` (already reviewed IDs + decision)
 - `immich-swipe-preferences:<server>:<user>` (order mode + album hotkeys)
+- `immich-swipe-observability:<server>:<user>` (Umami + OpenTelemetry settings)
 
 ## Immich API key permissions
 

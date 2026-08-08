@@ -3,6 +3,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useReviewedStore } from '@/stores/reviewed'
+import { trackEvent } from '@/composables/useUmami'
+import { recordSwipeAction, traceReviewAction } from '@/composables/useOtel'
 import router from '@/router'
 import type {
   ImmichAsset,
@@ -287,6 +289,40 @@ export function useImmich() {
     }
   }
 
+  // Fans out a review action to Umami (custom event) + OTel (counter + span).
+  // All no-ops when the respective integration is disabled, so review
+  // behavior is unchanged when observability is off.
+  function trackObservabilityAction(
+    action: 'keep' | 'delete' | 'undo' | 'album_added',
+    opts: { actionType?: string; albumName?: string } = {}
+  ): void {
+    const asset = currentAsset.value
+    const assetType = asset?.type
+    const personFiltered = preferencesStore.selectedPersonId !== null
+
+    // Umami event
+    const umamiEvent =
+      action === 'keep' ? 'swipe.keep'
+      : action === 'delete' ? 'swipe.delete'
+      : action === 'undo' ? 'swipe.undo'
+      : 'swipe.album_add'
+    trackEvent(umamiEvent, {
+      assetId: asset?.id,
+      assetType,
+      ...(opts.actionType ? { actionType: opts.actionType } : {}),
+      ...(opts.albumName ? { albumName: opts.albumName } : {}),
+    })
+
+    // OTel counter + span
+    const counterName =
+      action === 'keep' ? 'kept'
+      : action === 'delete' ? 'deleted'
+      : action === 'undo' ? 'undo'
+      : 'album_added'
+    recordSwipeAction(counterName, { assetType, personFiltered, albumName: opts.albumName })
+    traceReviewAction(opts.actionType ?? action, { assetType, personFiltered, albumName: opts.albumName })
+  }
+
   async function fetchNextChronologicalAsset(): Promise<ImmichAsset | null> {    while (chronologicalQueue.value.length === 0 && chronologicalHasMore.value) {
       await loadChronologicalBatch()
     }
@@ -528,6 +564,7 @@ export function useImmich() {
     reviewedStore.markReviewed(assetToKeep.id, 'keep')
     uiStore.incrementKept()
     trackReviewAction()
+    trackObservabilityAction('keep')
     uiStore.toast('Photo kept ✓', 'success', 1500)
     moveToNextAsset()
   }
@@ -547,6 +584,7 @@ export function useImmich() {
       reviewedStore.markReviewed(assetToKeep.id, 'keep')
       uiStore.incrementKept()
       trackReviewAction()
+      trackObservabilityAction('album_added', { albumName: album.albumName })
       uiStore.toast(`Added to ${album.albumName}`, 'success', 1800)
       moveToNextAsset()
     } catch (e) {
@@ -576,6 +614,7 @@ export function useImmich() {
         reviewedStore.markReviewed(updatedAsset.id, 'keep')
         uiStore.incrementKept()
         trackReviewAction()
+        trackObservabilityAction('keep')
         uiStore.toast('Favorited ✓', 'success', 1500)
         moveToNextAsset()
       } else {
@@ -599,6 +638,7 @@ export function useImmich() {
       reviewedStore.markReviewed(assetToDelete.id, 'delete')
       uiStore.incrementDeleted()
       trackReviewAction()
+      trackObservabilityAction('delete')
       uiStore.toast('Photo deleted', 'info', 1500)
       moveToNextAsset()
     } else {
@@ -613,6 +653,8 @@ export function useImmich() {
       uiStore.toast('Nothing to undo', 'info', 1500)
       return
     }
+
+    trackObservabilityAction('undo', { actionType: lastAction.type })
 
     const assetToResumeAfterUndo = currentAsset.value
     const preloadedAfterResume = nextAsset.value

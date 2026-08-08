@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { trackPageView } from '@/composables/useUmami'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -8,6 +9,12 @@ const router = createRouter({
       path: '/',
       name: 'home',
       component: () => import('@/views/HomeView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/SettingsView.vue'),
       meta: { requiresAuth: true },
     },
     {
@@ -21,6 +28,11 @@ const router = createRouter({
       component: () => import('@/views/UserSelectView.vue'),
     },
   ],
+})
+
+// Track page views in Umami on every navigation (no-op until script loaded).
+router.afterEach((to) => {
+  trackPageView(to.fullPath)
 })
 
 // Navigation guard

@@ -12,6 +12,16 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.221.0",
+    "@opentelemetry/instrumentation": "0.221.0",
+    "@opentelemetry/instrumentation-fetch": "0.221.0",
+    "@opentelemetry/instrumentation-xml-http-request": "0.221.0",
+    "@opentelemetry/resources": "2.10.0",
+    "@opentelemetry/sdk-metrics": "2.10.0",
+    "@opentelemetry/sdk-trace-web": "2.10.0",
+    "@opentelemetry/semantic-conventions": "1.43.0",
     "pinia": "^4.0.0",
     "vue": "^3.5.25",
     "vue-router": "^5.0.0"
@@ -29,7 +39,12 @@
     "vue-tsc": "^3.1.5"
   },
   "description": "Swipe right to keep photos, swipe left to delete them -> just like a dating app, but for immich! Powered by Vue 3 + TypeScript & Tailwind",
-  "keywords": ["immich", "photo", "swipe", "vue"],
+  "keywords": [
+    "immich",
+    "photo",
+    "swipe",
+    "vue"
+  ],
   "author": "",
   "license": "MIT"
 }
