@@ -2,9 +2,14 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '@/stores/auth'
 
+const SESSIONS_KEY = 'immich-swipe-sessions'
+const ACTIVE_KEY = 'immich-swipe-active-session'
+const LEGACY_KEY = 'immich-swipe-session'
+
 describe('auth store loginWithCredentials', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn())
   })
@@ -52,13 +57,17 @@ describe('auth store loginWithCredentials', () => {
     expect(auth.immichServerUrl).toBe('https://immich.example')
     expect(auth.autoLoginBlocked).toBe(false)
     expect(auth.isLoggedIn).toBe(true)
+    expect(auth.sessionCount).toBe(1)
+    expect(auth.activeSessionKey).toBe('https://immich.example|Display Name')
 
-    const stored = JSON.parse(sessionStorage.getItem('immich-swipe-session') || '{}')
-    expect(stored.token).toBe('swipe-session')
-    expect(stored.userName).toBe('Display Name')
-    expect(stored.serverUrl).toBe('https://immich.example')
-    expect(stored.password).toBeUndefined()
-    expect(stored.accessToken).toBeUndefined()
+    const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
+    expect(stored).toHaveLength(1)
+    expect(stored[0].token).toBe('swipe-session')
+    expect(stored[0].userName).toBe('Display Name')
+    expect(stored[0].serverUrl).toBe('https://immich.example')
+    expect(stored[0].password).toBeUndefined()
+    expect(stored[0].accessToken).toBeUndefined()
+    expect(localStorage.getItem(ACTIVE_KEY)).toBe('https://immich.example|Display Name')
 
     const loginCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/auth/login'))
     expect(loginCall).toBeTruthy()
@@ -102,7 +111,8 @@ describe('auth store loginWithCredentials', () => {
     }
     expect(auth.sessionToken).toBeNull()
     expect(auth.isLoggedIn).toBe(false)
-    expect(sessionStorage.getItem('immich-swipe-session')).toBeNull()
+    expect(auth.sessionCount).toBe(0)
+    expect(localStorage.getItem(SESSIONS_KEY)).toBeNull()
   })
 
   it('loginManual still works alongside credentials', async () => {
@@ -256,25 +266,155 @@ describe('auth store loginWithCredentials', () => {
   })
 })
 
-describe('auth store init', () => {
+describe('auth store multi-session registry', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.stubGlobal('fetch', vi.fn())
   })
 
   afterEach(() => {
+    vi.unstubAllGlobals()
+    sessionStorage.clear()
+  })
+
+  function stubLoginOk(fetchMock: ReturnType<typeof vi.fn>) {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/api/auth/login')) {
+        const body = JSON.parse(String(init?.body || '{}'))
+        const name = body.userName ?? body.email
+        return new Response(
+          JSON.stringify({
+            token: `token-${name}`,
+            userName: name,
+            serverUrl: 'https://immich.example',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response('not found', { status: 404 })
+    })
+  }
+
+  it('keeps both persons logged in after a second login', async () => {
+    const fetchMock = vi.mocked(fetch)
+    stubLoginOk(fetchMock)
+    const auth = useAuthStore()
+
+    const first = await auth.loginWithCredentials('alice@example.com', 'pw', 'https://immich.example')
+    expect(first).toEqual({ ok: true })
+    expect(auth.currentUserName).toBe('alice@example.com')
+
+    const second = await auth.loginWithCredentials('bob@example.com', 'pw', 'https://immich.example')
+    expect(second).toEqual({ ok: true })
+
+    expect(auth.sessionCount).toBe(2)
+    expect(auth.currentUserName).toBe('bob@example.com')
+    expect(auth.activeSessionKey).toBe('https://immich.example|bob@example.com')
+
+    // Registry persisted with both sessions, no secrets leaked
+    const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
+    expect(stored).toHaveLength(2)
+    expect(stored.map((s: { userName: string }) => s.userName)).toEqual([
+      'alice@example.com',
+      'bob@example.com',
+    ])
+    expect(stored[0].password).toBeUndefined()
+  })
+
+  it('sessions getter lists persons without exposing tokens', async () => {
+    const fetchMock = vi.mocked(fetch)
+    stubLoginOk(fetchMock)
+    const auth = useAuthStore()
+
+    await auth.loginWithCredentials('alice@example.com', 'pw', 'https://immich.example')
+    await auth.loginWithCredentials('bob@example.com', 'pw', 'https://immich.example')
+
+    expect(auth.sessions).toHaveLength(2)
+    expect(auth.sessions[0].userName).toBe('alice@example.com')
+    expect(auth.sessions[0].key).toBe('https://immich.example|alice@example.com')
+    expect('token' in auth.sessions[0]).toBe(false)
+  })
+
+  it('switchTo activates another stored session without re-login', async () => {
+    const fetchMock = vi.mocked(fetch)
+    stubLoginOk(fetchMock)
+    const auth = useAuthStore()
+
+    await auth.loginWithCredentials('alice@example.com', 'pw', 'https://immich.example')
+    await auth.loginWithCredentials('bob@example.com', 'pw', 'https://immich.example')
+    const aliceKey = auth.sessions.find((s) => s.userName === 'alice@example.com')!.key
+
+    auth.switchTo(aliceKey)
+
+    expect(auth.currentUserName).toBe('alice@example.com')
+    expect(auth.sessionToken).toBe('token-alice@example.com')
+    expect(auth.activeSessionKey).toBe(aliceKey)
+    expect(localStorage.getItem(ACTIVE_KEY)).toBe(aliceKey)
+    // Both sessions remain stored
+    expect(auth.sessionCount).toBe(2)
+  })
+
+  it('switchTo ignores unknown keys', async () => {
+    const fetchMock = vi.mocked(fetch)
+    stubLoginOk(fetchMock)
+    const auth = useAuthStore()
+    await auth.loginWithCredentials('alice@example.com', 'pw', 'https://immich.example')
+
+    auth.switchTo('https://other|nobody')
+
+    expect(auth.currentUserName).toBe('alice@example.com')
+  })
+
+  it('upserts: logging in the same person replaces the stored record', async () => {
+    const fetchMock = vi.mocked(fetch)
+    stubLoginOk(fetchMock)
+    const auth = useAuthStore()
+
+    await auth.loginWithCredentials('alice@example.com', 'pw', 'https://immich.example')
+    await auth.loginWithCredentials('bob@example.com', 'pw', 'https://immich.example')
+    // Alice logs in again -> same identity, new token
+    await auth.loginWithCredentials('alice@example.com', 'pw', 'https://immich.example')
+
+    expect(auth.sessionCount).toBe(2)
+    const alice = auth.sessions.find((s) => s.userName === 'alice@example.com')!
+    expect(alice).toBeTruthy()
+    // Latest login wins and becomes active
+    expect(auth.activeSessionKey).toBe(alice.key)
+    const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
+    expect(stored).toHaveLength(2)
+  })
+})
+
+describe('auth store init', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
+  afterEach(() => {
+    localStorage.clear()
     sessionStorage.clear()
     vi.unstubAllGlobals()
   })
 
-  it('loads session from sessionStorage', () => {
-    sessionStorage.setItem(
-      'immich-swipe-session',
-      JSON.stringify({
-        token: 'stored-token',
-        userName: 'Stored User',
-        serverUrl: 'https://immich.example',
-      }),
+  it('loads the session registry from localStorage', () => {
+    localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify([
+        { token: 'stored-token', userName: 'Stored User', serverUrl: 'https://immich.example' },
+      ]),
     )
+    localStorage.setItem(ACTIVE_KEY, 'https://immich.example|Stored User')
     // Prevent fetchConfig network call
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
 
@@ -284,30 +424,66 @@ describe('auth store init', () => {
     expect(auth.currentUserName).toBe('Stored User')
     expect(auth.immichServerUrl).toBe('https://immich.example')
     expect(auth.isLoggedIn).toBe(true)
+    expect(auth.sessionCount).toBe(1)
   })
 
-  it('handles corrupt sessionStorage gracefully', () => {
-    sessionStorage.setItem('immich-swipe-session', 'not-json-at-all')
+  it('migrates the legacy single session from sessionStorage', () => {
+    sessionStorage.setItem(
+      LEGACY_KEY,
+      JSON.stringify({
+        token: 'legacy-token',
+        userName: 'Legacy User',
+        serverUrl: 'https://immich.example',
+      }),
+    )
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
+
+    const auth = useAuthStore()
+
+    expect(auth.sessionToken).toBe('legacy-token')
+    expect(auth.currentUserName).toBe('Legacy User')
+    expect(auth.isLoggedIn).toBe(true)
+    // Migrated into the registry and the legacy key was removed
+    const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
+    expect(stored).toHaveLength(1)
+    expect(stored[0].token).toBe('legacy-token')
+    expect(sessionStorage.getItem(LEGACY_KEY)).toBeNull()
+  })
+
+  it('handles corrupt registry gracefully', () => {
+    localStorage.setItem(SESSIONS_KEY, 'not-json-at-all')
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
 
     const auth = useAuthStore()
     expect(auth.sessionToken).toBeNull()
     expect(auth.isLoggedIn).toBe(false)
-    expect(sessionStorage.getItem('immich-swipe-session')).toBeNull()
+    expect(localStorage.getItem(SESSIONS_KEY)).toBeNull()
   })
 
-  it('handles missing sessionStorage entry', () => {
+  it('handles corrupt legacy storage gracefully', () => {
+    sessionStorage.setItem(LEGACY_KEY, 'not-json-at-all')
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
+
+    const auth = useAuthStore()
+    expect(auth.sessionToken).toBeNull()
+    expect(auth.isLoggedIn).toBe(false)
+    expect(sessionStorage.getItem(LEGACY_KEY)).toBeNull()
+  })
+
+  it('handles missing registry entry', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
     const auth = useAuthStore()
     expect(auth.sessionToken).toBeNull()
     expect(auth.currentUserName).toBe('')
     expect(auth.immichServerUrl).toBe('')
+    expect(auth.sessionCount).toBe(0)
   })
 })
 
 describe('auth store fetchConfig', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn())
   })
@@ -356,93 +532,158 @@ describe('auth store fetchConfig', () => {
 describe('auth store computed properties', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    localStorage.clear()
     sessionStorage.clear()
   })
 
   it('authHeader returns Authorization header when logged in', () => {
+    localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify([{ token: 'my-token', userName: 'u', serverUrl: 'https://s' }]),
+    )
+    localStorage.setItem(ACTIVE_KEY, 'https://s|u')
     const auth = useAuthStore()
-    auth.sessionToken = 'my-token'
     expect(auth.authHeader).toEqual({ Authorization: 'Bearer my-token' })
   })
 
   it('authHeader returns empty object when not logged in', () => {
     const auth = useAuthStore()
-    auth.sessionToken = null
     expect(auth.authHeader).toEqual({})
   })
 
-  it('isLoggedIn reflects sessionToken state', () => {
+  it('isLoggedIn reflects active session state', () => {
     const auth = useAuthStore()
     expect(auth.isLoggedIn).toBe(false)
-    auth.sessionToken = 't'
-    expect(auth.isLoggedIn).toBe(true)
-    auth.sessionToken = null
-    expect(auth.isLoggedIn).toBe(false)
+
+    // Re-seed storage and create a fresh store to re-run init()
+    setActivePinia(createPinia())
+    localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify([{ token: 't', userName: 'u', serverUrl: 'https://s' }]),
+    )
+    localStorage.setItem(ACTIVE_KEY, 'https://s|u')
+    const auth2 = useAuthStore()
+    expect(auth2.isLoggedIn).toBe(true)
+    expect(auth2.sessionToken).toBe('t')
   })
 })
 
 describe('auth store logout', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn())
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    localStorage.clear()
     sessionStorage.clear()
   })
 
-  it('clears all state and sessionStorage on logout', async () => {
+  function seedSessions(): string[] {
+    localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify([
+        { token: 't-alice', userName: 'Alice', serverUrl: 'https://immich' },
+        { token: 't-bob', userName: 'Bob', serverUrl: 'https://immich' },
+      ]),
+    )
+    localStorage.setItem(ACTIVE_KEY, 'https://immich|Alice')
+    const auth = useAuthStore()
+    return auth.sessions.map((s) => s.key)
+  }
+
+  it('removes only the active session and falls back to another person', () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }))
 
-    // Set up logged-in state
+    // Seed BEFORE the store is created so init() picks the registry up
+    seedSessions()
     const auth = useAuthStore()
-    sessionStorage.setItem(
-      'immich-swipe-session',
-      JSON.stringify({
-        token: 't',
-        userName: 'u',
-        serverUrl: 'https://s',
-      }),
-    )
-    auth.sessionToken = 't'
-    auth.currentUserName = 'u'
-    auth.immichServerUrl = 'https://s'
+    expect(auth.currentUserName).toBe('Alice')
 
-    auth.logout()
+    const remaining = auth.logout()
 
-    expect(auth.sessionToken).toBeNull()
-    expect(auth.currentUserName).toBe('')
-    expect(auth.immichServerUrl).toBe('')
-    expect(auth.autoLoginBlocked).toBe(false)
-    expect(auth.isLoggedIn).toBe(false)
-    expect(sessionStorage.getItem('immich-swipe-session')).toBeNull()
+    expect(remaining).toBe(true)
+    expect(auth.sessionCount).toBe(1)
+    expect(auth.currentUserName).toBe('Bob')
+    expect(auth.sessionToken).toBe('t-bob')
+    expect(auth.isLoggedIn).toBe(true)
+    // Registry persisted without Alice
+    const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
+    expect(stored).toHaveLength(1)
+    expect(stored[0].userName).toBe('Bob')
   })
 
-  it('sends POST /api/auth/logout with auth header when logged in', async () => {
+  it('sends POST /api/auth/logout with the active session token', () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }))
 
+    seedSessions()
     const auth = useAuthStore()
-    auth.sessionToken = 'my-session'
 
     auth.logout()
 
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/logout', {
       method: 'POST',
-      headers: { Authorization: 'Bearer my-session' },
+      headers: { Authorization: 'Bearer t-alice' },
     })
   })
 
-  it('succeeds when not logged in (no fetch call)', async () => {
+  it('last session logout clears everything and reports no remaining', () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }))
+
+    localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify([{ token: 't', userName: 'u', serverUrl: 'https://s' }]),
+    )
+    localStorage.setItem(ACTIVE_KEY, 'https://s|u')
+    const auth = useAuthStore()
+
+    const remaining = auth.logout()
+
+    expect(remaining).toBe(false)
+    expect(auth.sessionToken).toBeNull()
+    expect(auth.currentUserName).toBe('')
+    expect(auth.immichServerUrl).toBe('')
+    expect(auth.autoLoginBlocked).toBe(false)
+    expect(auth.isLoggedIn).toBe(false)
+    expect(auth.sessionCount).toBe(0)
+    expect(localStorage.getItem(SESSIONS_KEY)).toBeNull()
+    expect(localStorage.getItem(ACTIVE_KEY)).toBeNull()
+  })
+
+  it('logoutSession removes a non-active person and keeps the active one', () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }))
+
+    const keys = seedSessions()
+    const auth = useAuthStore()
+    const bobKey = keys[1]
+
+    const remaining = auth.logoutSession(bobKey)
+
+    expect(remaining).toBe(true)
+    expect(auth.sessionCount).toBe(1)
+    expect(auth.currentUserName).toBe('Alice')
+    expect(auth.sessionToken).toBe('t-alice')
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer t-bob' },
+    })
+  })
+
+  it('succeeds when not logged in (no fetch call)', () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockResolvedValue(new Response(null, { status: 200 }))
 
@@ -455,15 +696,111 @@ describe('auth store logout', () => {
   })
 })
 
+describe('auth store removeActiveSession (401 path)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
+  it('removes the dead session and switches to another person without a logout call', () => {
+    localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify([
+        { token: 't-alice', userName: 'Alice', serverUrl: 'https://immich' },
+        { token: 't-bob', userName: 'Bob', serverUrl: 'https://immich' },
+      ]),
+    )
+    localStorage.setItem(ACTIVE_KEY, 'https://immich|Alice')
+    const auth = useAuthStore()
+
+    const remaining = auth.removeActiveSession()
+
+    expect(remaining).toBe(true)
+    expect(auth.currentUserName).toBe('Bob')
+    expect(auth.sessionToken).toBe('t-bob')
+    expect(auth.sessionCount).toBe(1)
+    // No backend logout call for an already-dead session
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/auth/logout'),
+      expect.anything(),
+    )
+  })
+
+  it('returns false when the dead session was the only one', () => {
+    localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify([{ token: 't', userName: 'u', serverUrl: 'https://s' }]),
+    )
+    localStorage.setItem(ACTIVE_KEY, 'https://s|u')
+    const auth = useAuthStore()
+
+    const remaining = auth.removeActiveSession()
+
+    expect(remaining).toBe(false)
+    expect(auth.isLoggedIn).toBe(false)
+    expect(auth.sessionCount).toBe(0)
+  })
+})
+
+describe('auth store restoreLastActive', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
+  it('restores the first stored session when no active pointer is set', () => {
+    localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify([
+        { token: 't-alice', userName: 'Alice', serverUrl: 'https://immich' },
+        { token: 't-bob', userName: 'Bob', serverUrl: 'https://immich' },
+      ]),
+    )
+    const auth = useAuthStore()
+    expect(auth.isLoggedIn).toBe(false)
+
+    auth.restoreLastActive()
+
+    expect(auth.isLoggedIn).toBe(true)
+    expect(auth.currentUserName).toBe('Alice')
+    expect(auth.sessionToken).toBe('t-alice')
+  })
+
+  it('does nothing when no sessions are stored', () => {
+    const auth = useAuthStore()
+    auth.restoreLastActive()
+    expect(auth.isLoggedIn).toBe(false)
+    expect(auth.sessionCount).toBe(0)
+  })
+})
+
 describe('auth store loginManual failures', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn())
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    localStorage.clear()
     sessionStorage.clear()
   })
 
@@ -516,12 +853,14 @@ describe('auth store loginManual failures', () => {
 describe('auth store loginWithUser failures', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn())
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    localStorage.clear()
     sessionStorage.clear()
   })
 
@@ -570,35 +909,48 @@ describe('auth store loginWithUser failures', () => {
   })
 })
 
-describe('auth store saveSession', () => {
+describe('auth store session persistence', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.clear()
     sessionStorage.clear()
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    localStorage.clear()
     sessionStorage.clear()
   })
 
-  it('loginWithCredentials does not store password in sessionStorage', async () => {
+  it('loginWithCredentials does not store password in localStorage', async () => {
     const fetchMock = vi.mocked(fetch)
-    fetchMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          token: 'session-x',
-          userName: 'User',
-          serverUrl: 'https://immich.example',
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    )
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/api/auth/login')) {
+        return new Response(
+          JSON.stringify({
+            token: 'session-x',
+            userName: 'User',
+            serverUrl: 'https://immich.example',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response('not found', { status: 404 })
+    })
 
     const auth = useAuthStore()
     await auth.loginWithCredentials('a@b.com', 'supersecret', 'https://immich.example')
 
-    const stored = JSON.parse(sessionStorage.getItem('immich-swipe-session') || '{}')
-    expect(stored.password).toBeUndefined()
+    const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
+    expect(stored).toHaveLength(1)
+    expect(stored[0].password).toBeUndefined()
   })
 })

@@ -2,9 +2,9 @@ import { createPinia, setActivePinia } from 'pinia'
 import { vi } from 'vitest'
 import type { Mock } from 'vitest'
 import { useImmich } from '@/composables/useImmich'
-import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import type { ImmichAsset } from '@/types/immich'
+import { seedAuthSession } from './helpers/seedAuth'
 
 describe('useImmich album flow', () => {
   const dummyAsset: ImmichAsset = {
@@ -26,11 +26,8 @@ describe('useImmich album flow', () => {
 
   beforeEach(() => {
     setActivePinia(createPinia())
-    // Mock auth as logged in with session
-    const auth = useAuthStore()
-    auth.sessionToken = 'test-token'
-    auth.currentUserName = 'Alice'
-    auth.immichServerUrl = 'http://immich.example.com'
+    // Mock auth as logged in with session (seed before store instantiation)
+    seedAuthSession('test-token', 'Alice', 'http://immich.example.com')
 
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, ..._rest: unknown[]) => {
       const url = typeof input === 'string' ? input : input.toString()

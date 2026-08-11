@@ -54,6 +54,7 @@ describe('router guard login loop prevention', () => {
   beforeEach(async () => {
     setActivePinia(createPinia())
     sessionStorage.clear()
+    localStorage.clear()
     // The router is a module singleton: pushing the same path the previous
     // test ended on is a duplicate navigation that never re-runs the guard.
     // Start every test from /login (via a neutral no-users stub) so each
@@ -68,6 +69,21 @@ describe('router guard login loop prevention', () => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
+
+  /** Seed a persisted multi-session registry and force a fresh pinia so the
+   *  auth store is instantiated AFTER seeding (init() reads localStorage at
+   *  store creation). */
+  function seedStoredSessions() {
+    localStorage.setItem(
+      'immich-swipe-sessions',
+      JSON.stringify([
+        { token: 't-alice', userName: 'Alice', serverUrl: 'https://immich' },
+        { token: 't-bob', userName: 'Bob', serverUrl: 'https://immich' },
+      ]),
+    )
+    localStorage.setItem('immich-swipe-active-session', 'https://immich|Alice')
+    setActivePinia(createPinia())
+  }
 
   it('auto-logs-in a single env user when not blocked (5.3 happy path)', async () => {
     await stubBackend(['Alice'], true)
@@ -131,5 +147,42 @@ describe('router guard login loop prevention', () => {
     expect(auth.isLoggedIn).toBe(false)
     expect(router.currentRoute.value.path).toBe('/login')
     expect(auth.autoLoginBlocked).toBe(false)
+  })
+
+  it('restores a persisted session on navigation (reload without re-login)', async () => {
+    await stubBackend([], true)
+    seedStoredSessions()
+
+    await router.push('/')
+
+    const auth = useAuthStore()
+    expect(auth.isLoggedIn).toBe(true)
+    expect(auth.currentUserName).toBe('Alice')
+    expect(auth.sessionCount).toBe(2)
+    expect(router.currentRoute.value.path).toBe('/')
+  })
+
+  it('allows /login while logged in (add-person flow)', async () => {
+    await stubBackend([], true)
+    seedStoredSessions()
+
+    await router.push('/login')
+
+    const auth = useAuthStore()
+    // Existing sessions are NOT wiped by visiting /login
+    expect(auth.isLoggedIn).toBe(true)
+    expect(auth.sessionCount).toBe(2)
+    expect(router.currentRoute.value.path).toBe('/login')
+  })
+
+  it('redirects /select-user to home while a session is active', async () => {
+    await stubBackend([], true)
+    seedStoredSessions()
+
+    await router.push('/select-user')
+
+    const auth = useAuthStore()
+    expect(auth.isLoggedIn).toBe(true)
+    expect(router.currentRoute.value.path).toBe('/')
   })
 })

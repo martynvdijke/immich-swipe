@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useImmich } from '@/composables/useImmich'
 import { useUiStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { trackEvent } from '@/composables/useUmami'
 import { recordPersonFilter } from '@/composables/useOtel'
@@ -29,6 +30,7 @@ const {
   canUndo,
 } = useImmich()
 const uiStore = useUiStore()
+const authStore = useAuthStore()
 const preferencesStore = usePreferencesStore()
 
 const showAlbumPicker = ref(false)
@@ -221,6 +223,15 @@ watch(
 // Person selection resets the flow and reloads from the person-scoped feed.
 watch(
   () => preferencesStore.selectedPersonId,
+  async () => {
+    await loadInitialAsset()
+  }
+)
+
+// Account switch (multi-person sessions): reload the feed for the newly
+// active person. Per-user stores reload via their own identity watchers.
+watch(
+  () => [authStore.immichServerUrl, authStore.currentUserName],
   async () => {
     await loadInitialAsset()
   }

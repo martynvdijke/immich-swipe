@@ -26,6 +26,7 @@ const preferencesStore = usePreferencesStore()
 const reviewedStore = useReviewedStore()
 const router = useRouter()
 const showResetModal = ref(false)
+const personMenuOpen = ref(false)
 
 const hasActiveScope = computed(() => props.scopeLabel != null && props.scopeLabel.length > 0)
 const hasActivePerson = computed(() => props.personLabel != null && props.personLabel.length > 0)
@@ -41,18 +42,33 @@ const libraryReviewed = computed(
   () => showProgress.value && reviewedStore.reviewedCount >= total.value
 )
 
-function handleLogout() {
-  authStore.logout()
-  uiStore.resetStats()
+function selectPerson(key: string) {
+  authStore.switchTo(key)
+  personMenuOpen.value = false
+  // Identity watchers in HomeView + per-user stores reload the new person's state.
+}
 
-  // If env users configured -> user selection; else -> manual login
-  if (authStore.envUsers.length > 1) {
-    router.push('/select-user')
-  } else if (authStore.envUsers.length === 1) {
-    // Single env user -> re-login
-    router.push('/')
+function addPerson() {
+  personMenuOpen.value = false
+  router.push('/login')
+}
+
+function signOutPerson(key: string) {
+  const wasActive = key === authStore.activeSessionKey
+  const remaining = wasActive ? authStore.logout() : authStore.logoutSession(key)
+  personMenuOpen.value = false
+  if (remaining) {
+    // Another session became active automatically; identity watchers reload.
+    uiStore.toast(`Signed out — switched to ${authStore.currentUserName}`, 'info')
   } else {
-    router.push('/login')
+    // No sessions left -> env-user selection, auto re-login, or manual login
+    if (authStore.envUsers.length > 1) {
+      router.push('/select-user')
+    } else if (authStore.envUsers.length === 1) {
+      router.push('/')
+    } else {
+      router.push('/login')
+    }
   }
 }
 
@@ -91,13 +107,90 @@ function confirmResetReviewed() {
           :class="uiStore.isDarkMode ? 'text-white' : 'text-gray-900'">
         Immich Swipe
       </h1>
-      <!-- User badge -->
-      <span v-if="authStore.currentUserName" 
-        class="px-2 py-0.5 text-xs rounded-full"
-        :class="uiStore.isDarkMode ? 'bg-indigo-900 text-indigo-200' : 'bg-indigo-100 text-indigo-700'"
-      >
-        {{ authStore.currentUserName }}
-      </span>
+      <!-- Person switcher -->
+      <div class="relative">
+        <button
+          @click="personMenuOpen = !personMenuOpen"
+          class="flex items-center gap-1.5 px-2 py-0.5 text-xs rounded-full transition-colors"
+          :class="uiStore.isDarkMode ? 'bg-indigo-900 text-indigo-200' : 'bg-indigo-100 text-indigo-700'"
+          :aria-expanded="personMenuOpen"
+          aria-haspopup="menu"
+          aria-label="Switch person"
+          title="Switch person"
+        >
+          <span v-if="authStore.currentUserName">{{ authStore.currentUserName }}</span>
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <!-- Click-outside catcher -->
+        <div
+          v-if="personMenuOpen"
+          class="fixed inset-0 z-40"
+          @click="personMenuOpen = false"
+        ></div>
+
+        <!-- Person menu -->
+        <div
+          v-if="personMenuOpen"
+          class="absolute left-0 top-full mt-2 z-50 w-64 rounded-2xl shadow-2xl border p-2 text-left"
+          :class="uiStore.isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'"
+          role="menu"
+        >
+          <p
+            class="px-3 pt-1 pb-2 text-xs font-semibold uppercase tracking-wide"
+            :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-500'"
+          >
+            Logged in
+          </p>
+          <div
+            v-for="session in authStore.sessions"
+            :key="session.key"
+            class="flex items-center gap-2 rounded-xl px-3 py-2 text-sm"
+            :class="session.key === authStore.activeSessionKey
+              ? (uiStore.isDarkMode ? 'bg-indigo-900/60 text-indigo-200' : 'bg-indigo-100 text-indigo-800')
+              : (uiStore.isDarkMode ? 'text-gray-300 hover:bg-gray-800' : 'text-gray-700 hover:bg-gray-100')"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              class="flex-1 min-w-0 text-left truncate"
+              @click="selectPerson(session.key)"
+            >
+              {{ session.userName }}
+            </button>
+            <span
+              v-if="session.key === authStore.activeSessionKey"
+              class="text-xs opacity-70"
+            >
+              active
+            </span>
+            <button
+              type="button"
+              class="text-xs font-medium opacity-70 hover:opacity-100"
+              :title="`Sign out ${session.userName}`"
+              :aria-label="`Sign out ${session.userName}`"
+              @click="signOutPerson(session.key)"
+            >
+              Sign out
+            </button>
+          </div>
+          <hr class="my-1 border-gray-200 dark:border-gray-800" />
+          <button
+            type="button"
+            role="menuitem"
+            class="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium"
+            :class="uiStore.isDarkMode ? 'text-gray-200 hover:bg-gray-800' : 'text-gray-800 hover:bg-gray-100'"
+            @click="addPerson"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Add person
+          </button>
+        </div>
+      </div>
       <!-- Theme toggle -->
       <button
         @click="uiStore.toggleDarkMode()"
@@ -284,23 +377,6 @@ function confirmResetReviewed() {
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
-      </button>
-      <!-- Logout / Switch User -->
-      <button
-        @click="handleLogout"
-        class="p-2 rounded-full transition-colors"
-        :class="uiStore.isDarkMode ? 'hover:bg-gray-800 text-white' : 'hover:bg-gray-200 text-gray-700'"
-        :aria-label="authStore.envUsers.length > 1 ? 'Switch user' : 'Logout'"
-        :title="authStore.envUsers.length > 1 ? 'Switch user' : 'Logout'"
-      >
-        <!-- Switch user icon for multi-user env -->
-        <svg v-if="authStore.envUsers.length > 1" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-        </svg>
-        <!-- Logout icon for manual login -->
-        <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
         </svg>
       </button>
     </div>

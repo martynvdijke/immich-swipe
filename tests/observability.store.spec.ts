@@ -2,6 +2,7 @@ import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { useObservabilityStore } from '@/stores/observability'
 import { useAuthStore } from '@/stores/auth'
+import { seedAuthSession, seedAuthSessions } from './helpers/seedAuth'
 
 function observabilityKeys(): string[] {
   return Object.keys(localStorage).filter((k) => k.startsWith('immich-swipe-observability'))
@@ -29,9 +30,7 @@ describe('observability store', () => {
   })
 
   it('persists umami + otel settings and rehydrates on a fresh store', async () => {
-    const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
+    seedAuthSession('test-token', 'Alice', 'http://server-a')
 
     const store = useObservabilityStore()
     store.setUmami({
@@ -53,9 +52,6 @@ describe('observability store', () => {
 
     // Fresh pinia re-reads the persisted payload (trailing slashes normalized).
     setActivePinia(createPinia())
-    const auth2 = useAuthStore()
-    auth2.immichServerUrl = 'http://server-a'
-    auth2.currentUserName = 'Alice'
     const store2 = useObservabilityStore()
     expect(store2.settings.umami.enabled).toBe(true)
     expect(store2.settings.umami.serverUrl).toBe('https://umami.example.com')
@@ -63,16 +59,20 @@ describe('observability store', () => {
   })
 
   it('isolates settings per server/user namespace', async () => {
+    seedAuthSessions(
+      [
+        { token: 't-alice', userName: 'Alice', serverUrl: 'http://server-a' },
+        { token: 't-bob', userName: 'Bob', serverUrl: 'http://server-b' },
+      ],
+      'http://server-a|Alice',
+    )
     const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
 
     const store = useObservabilityStore()
     store.setUmami({ enabled: true, serverUrl: 'https://umami-a.example.com', websiteId: 'web-a' })
     await nextTick()
 
-    auth.immichServerUrl = 'http://server-b'
-    auth.currentUserName = 'Bob'
+    auth.switchTo('http://server-b|Bob')
     await nextTick()
 
     // New namespace resets to defaults.
@@ -84,9 +84,7 @@ describe('observability store', () => {
   })
 
   it('handles corrupted stored JSON by falling back to defaults', async () => {
-    const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
+    seedAuthSession('test-token', 'Alice', 'http://server-a')
 
     localStorage.setItem(
       'immich-swipe-observability:http://server-a:Alice',

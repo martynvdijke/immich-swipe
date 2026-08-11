@@ -147,7 +147,19 @@ On `/login` you can choose:
 2. **API key** (server URL + API key)  
    - Same as before; useful for private/single-user setups or when password login is disabled
 
-Only the opaque Swipe session token is kept in `sessionStorage` (cleared on tab close). Immich passwords and access tokens never leave the backend.
+Only opaque Swipe session tokens are kept in the browser — Immich passwords and access tokens never leave the backend.
+
+### Multi-person sessions
+
+Multiple people can be **logged in at the same time on one device/browser**. Every signed-in person appears in the header switcher (the user badge): tap to switch between them instantly — no re-entering credentials. Per-person state (stats, reviewed cache, review preferences, observability settings) follows the active person automatically.
+
+- **Add a person**: open the header switcher → **Add person** → sign in via `/login` while the existing sessions stay logged in.
+- **Sign out**: open the header switcher → **Sign out** next to a person — only that person is removed; if others remain, the app switches to the next one.
+- **Expired sessions**: a dead session (401) is removed automatically and the app falls back to the next logged-in person; when none remain you are sent to the login/selection screen.
+- Sessions survive page reloads; the last active person is restored on the next visit.
+- Legacy single-session data (`immich-swipe-session` in `sessionStorage`) is migrated automatically on first load.
+
+Security note: keeping sessions in `localStorage` (instead of tab-scoped `sessionStorage`) is what allows instant switching after reloads; it means a successful XSS could read session tokens. Swipe session tokens are opaque, not Immich secrets, and expire server-side after 24h.
 
 From the multi-user picker (`/select-user`), use **Sign in with Immich account** for people who are not listed in env keys.
 
@@ -202,7 +214,7 @@ The app uses a **Go backend** that serves static files and proxies all Immich AP
 ```
 Browser → Go backend (port 8080) → Immich server
          ↕
-    sessionStorage (session token)
+    localStorage (session tokens, multi-person)
 ```
 
 - Immich API keys and access tokens stay **server-side** — never in the browser
@@ -215,7 +227,8 @@ The frontend (Vue 3 SPA) authenticates via the backend and all API calls go thro
 
 ## Stored data (localStorage / sessionStorage)
 
-- `immich-swipe-session` (sessionStorage — session token from Go backend)
+- `immich-swipe-sessions` (localStorage — registry of logged-in persons; legacy `immich-swipe-session` in sessionStorage is migrated on first load)
+- `immich-swipe-active-session` (localStorage — which person is active, `serverUrl|userName`)
 - `immich-swipe-theme`
 - `immich-swipe-skip-videos`
 - `immich-swipe-stats:<server>:<user>` (keep/delete counters)

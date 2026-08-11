@@ -39,9 +39,16 @@ router.afterEach((to) => {
 router.beforeEach(async (to, _from, next) => {
   const authStore = useAuthStore()
 
+  // Restore a persisted session after reload when none is active yet.
+  if (!authStore.isLoggedIn && authStore.sessionCount > 0) {
+    authStore.restoreLastActive()
+  }
+
   // Logged in with session token -> home
   if (authStore.isLoggedIn) {
-    if (to.path === '/login' || to.path === '/select-user') {
+    // /login stays reachable while logged in: it is the "add person" flow.
+    // /select-user is env-user selection for the not-logged-in case only.
+    if (to.path === '/select-user') {
       next('/')
     } else {
       next()

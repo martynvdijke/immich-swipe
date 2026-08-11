@@ -2,6 +2,7 @@ import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useAuthStore } from '@/stores/auth'
+import { seedAuthSession, seedAuthSessions } from './helpers/seedAuth'
 
 describe('preferences store', () => {
   beforeEach(() => {
@@ -10,9 +11,7 @@ describe('preferences store', () => {
   })
 
   it('persists review order and hotkeys', async () => {
-    const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
+    seedAuthSession('test-token', 'Alice', 'http://server-a')
 
     const prefs = usePreferencesStore()
     prefs.setReviewOrder('chronological')
@@ -37,16 +36,20 @@ describe('preferences store', () => {
   })
 
   it('switches namespace when user changes', async () => {
+    seedAuthSessions(
+      [
+        { token: 't-alice', userName: 'Alice', serverUrl: 'http://server-a' },
+        { token: 't-bob', userName: 'Bob', serverUrl: 'http://server-b' },
+      ],
+      'http://server-a|Alice',
+    )
     const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
     const prefs = usePreferencesStore()
     prefs.setHotkey('2', 'album-a2')
     // Wait for persist after hotkey set
     await nextTick()
 
-    auth.immichServerUrl = 'http://server-b'
-    auth.currentUserName = 'Bob'
+    auth.switchTo('http://server-b|Bob')
     // Immediate loadFromStorage fires via watch immediate + storageKey change
     await nextTick()
 
@@ -65,9 +68,7 @@ describe('preferences store', () => {
   })
 
   it('persists review scope per namespace', async () => {
-    const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
+    seedAuthSession('test-token', 'Alice', 'http://server-a')
 
     const prefs = usePreferencesStore()
     prefs.setScope({ kind: 'album', albumId: 'album-x' })
@@ -85,9 +86,7 @@ describe('preferences store', () => {
   })
 
   it('rehydrates scope and selectedPersonId from storage on a fresh store', async () => {
-    const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
+    seedAuthSession('test-token', 'Alice', 'http://server-a')
     const prefs = usePreferencesStore()
     prefs.setScope({ kind: 'favorites' })
     prefs.setSelectedPerson('person-9')
@@ -95,9 +94,6 @@ describe('preferences store', () => {
 
     // Fresh pinia re-reads the persisted payload
     setActivePinia(createPinia())
-    const auth2 = useAuthStore()
-    auth2.immichServerUrl = 'http://server-a'
-    auth2.currentUserName = 'Alice'
     const prefs2 = usePreferencesStore()
     expect(prefs2.scope).toEqual({ kind: 'favorites' })
     expect(prefs2.selectedPersonId).toBe('person-9')

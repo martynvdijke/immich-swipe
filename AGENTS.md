@@ -32,10 +32,12 @@
   - `accessToken`: Proxy setzt `Authorization: Bearer <immich-access-token>`
   - Browser-`Authorization` (Swipe-Session) wird vor Upstream immer gestrippt
 - Wichtige lokale Storage Keys:
-  - Auth: `immich-swipe-session` (sessionStorage: Swipe-Token + userName + serverUrl; **keine** Immich-Secrets)
+  - Auth: `immich-swipe-sessions` (localStorage: Array `{token, userName, serverUrl}` aller eingeloggten Personen; **keine** Immich-Secrets) + `immich-swipe-active-session` (Aktive Person, Key `serverUrl|userName`); Legacy `immich-swipe-session` (sessionStorage) wird beim ersten Laden migriert
   - UI: `immich-swipe-theme`, `immich-swipe-skip-videos`
   - Stats: `immich-swipe-stats:<server>:<user>` (keep/delete Counter)
   - Review-Cache: `immich-swipe-reviewed:<server>:<user>` (bereits gesehene IDs + keep/delete)
+  - Preferences: `immich-swipe-preferences:<server>:<user>` (Reihenfolge, Album-Hotkeys, Scope, Person)
+- **Multi-Person-Sessions**: mehrere Personen können gleichzeitig eingeloggt sein; Header-Switcher (User-Badge) wechselt aktiv; „Add person“ → `/login` ohne andere Sessions zu verlieren; Logout entfernt nur die eine Person und fällt auf die nächste zurück; 401 entfernt nur die tote Session (`removeActiveSession`). Alle pro-User-Stores (ui/preferences/reviewed/observability) hängen an `authStore.immichServerUrl`/`currentUserName` (Computed aus aktiver Session) und laden beim Wechsel neu.
 - Credential-Login braucht Immich Password-Login enabled; OAuth/SSO out of scope.
 
 ## API/Proxy
@@ -72,10 +74,12 @@
 
 ## Code-Map (wichtigste Stellen)
 - Routing/Auth:
-  - `src/router/index.ts` (Guard: Redirects je nach Login/Env-Konfig, autoLoginBlocked)
-  - `src/stores/auth.ts` (sessionStorage, loginWithUser/loginManual/loginWithCredentials)
+  - `src/router/index.ts` (Guard: Restore letzte Session bei Reload, Redirects je nach Login/Env-Konfig, autoLoginBlocked; `/login` ist auch eingeloggt erreichbar = Add-Person-Flow)
+  - `src/stores/auth.ts` (Multi-Session-Registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithUser`/`loginManual`/`loginWithCredentials`; `sessionToken`/`currentUserName`/`immichServerUrl` sind Computed aus aktiver Session)
   - `src/views/LoginView.vue` (Account- vs API-Key-Tabs)
+  - `src/components/AppHeader.vue` (Person-Switcher-Dropdown: Liste aller Sessions, aktive Markierung, Sign out pro Person, Add person)
   - `server/main.go` (Sessions, Login, Proxy, Logout)
+  - Tests: `tests/helpers/seedAuth.ts` (`seedAuthSession`/`seedAuthSessions` — MUSS vor erstem `useAuthStore()` laufen)
 - Immich-Integration:
   - `src/composables/useImmich.ts` (Random Asset inkl. Skip-Videos Filter, Delete/Restore, Undo zeigt gelöschtes Asset wieder, Preload)
   - `src/types/immich.ts` (API-Typen)

@@ -3,8 +3,8 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsView from '@/views/SettingsView.vue'
-import { useAuthStore } from '@/stores/auth'
 import { useObservabilityStore } from '@/stores/observability'
+import { seedAuthSession } from './helpers/seedAuth'
 
 const m = vi.hoisted(() => ({
   loadUmami: vi.fn(async () => true),
@@ -49,9 +49,8 @@ describe('SettingsView', () => {
     m.loadUmami.mockResolvedValue(true)
     m.initOtel.mockResolvedValue(true)
 
-    const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
+    // Seed a logged-in session before the view (and its stores) instantiate
+    seedAuthSession('test-token', 'Alice', 'http://server-a')
   })
 
   it('blocks saving while umami is enabled but the website ID is missing', async () => {

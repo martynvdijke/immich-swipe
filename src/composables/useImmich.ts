@@ -112,11 +112,20 @@ export function useImmich() {
     })
 
     if (response.status === 401) {
-      authStore.logout()
-      // Block the router guard from immediately re-attempting auto-login,
-      // which would otherwise loop back into the same 401 state.
-      authStore.autoLoginBlocked = true
-      router.push('/login')
+      // The active session is dead: remove it and fall back to another
+      // logged-in person when one remains.
+      const remaining = authStore.removeActiveSession()
+      if (remaining) {
+        uiStore.toast(
+          `Session expired — switched to ${authStore.currentUserName || 'another person'}`,
+          'info'
+        )
+      } else {
+        // Block the router guard from immediately re-attempting auto-login,
+        // which would otherwise loop back into the same 401 state.
+        authStore.autoLoginBlocked = true
+        router.push('/login')
+      }
       throw new Error('Session expired')
     }
 

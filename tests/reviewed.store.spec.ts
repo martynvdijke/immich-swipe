@@ -2,6 +2,7 @@ import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { useReviewedStore } from '@/stores/reviewed'
+import { seedAuthSession, seedAuthSessions } from './helpers/seedAuth'
 
 describe('reviewed store', () => {
   beforeEach(() => {
@@ -10,9 +11,7 @@ describe('reviewed store', () => {
   })
 
   it('persists keep/delete decisions', async () => {
-    const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
+    seedAuthSession('test-token', 'Alice', 'http://server-a')
 
     const reviewed = useReviewedStore()
     reviewed.markReviewed('asset-1', 'keep')
@@ -35,16 +34,20 @@ describe('reviewed store', () => {
   })
 
   it('scopes cache by server/user', async () => {
+    seedAuthSessions(
+      [
+        { token: 't-alice', userName: 'Alice', serverUrl: 'http://server-a' },
+        { token: 't-bob', userName: 'Bob', serverUrl: 'http://server-b' },
+      ],
+      'http://server-a|Alice',
+    )
     const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
 
     const reviewed = useReviewedStore()
     reviewed.markReviewed('asset-1', 'keep')
     await nextTick()
 
-    auth.immichServerUrl = 'http://server-b'
-    auth.currentUserName = 'Bob'
+    auth.switchTo('http://server-b|Bob')
     await nextTick()
 
     expect(reviewed.isReviewed('asset-1')).toBe(false)
@@ -55,9 +58,7 @@ describe('reviewed store', () => {
   })
 
   it('exposes reviewedCount as kept + deleted sizes', () => {
-    const auth = useAuthStore()
-    auth.immichServerUrl = 'http://server-a'
-    auth.currentUserName = 'Alice'
+    seedAuthSession('test-token', 'Alice', 'http://server-a')
 
     const reviewed = useReviewedStore()
     expect(reviewed.reviewedCount).toBe(0)

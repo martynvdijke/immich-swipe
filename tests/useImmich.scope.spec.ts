@@ -2,8 +2,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { vi } from 'vitest'
 import type { Mock } from 'vitest'
 import { useImmich } from '@/composables/useImmich'
-import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
+import { seedAuthSession } from './helpers/seedAuth'
 
 /**
  * Scoped feed + review-progress tests: buildSearchFilters() merges the active
@@ -18,11 +18,9 @@ describe('useImmich scoped feed', () => {
     // next one (preferences loadFromStorage rehydrates from localStorage).
     localStorage.clear()
     sessionStorage.clear()
-    // Mock auth as logged in with session
-    const auth = useAuthStore()
-    auth.sessionToken = 'test-token'
-    auth.currentUserName = 'Alice'
-    auth.immichServerUrl = 'http://immich.example.com'
+    // Mock auth as logged in with session (must seed before the auth store is
+    // instantiated inside useImmich(), which reads the registry at creation).
+    seedAuthSession('test-token', 'Alice', 'http://immich.example.com')
 
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, ..._rest: unknown[]) => {
       const url = typeof input === 'string' ? input : input.toString()
