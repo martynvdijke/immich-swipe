@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/martynvdijke/immich-swipe/compare/v1.6.0...v1.7.0) (2026-08-11)
+
+
+### Features
+
+* support multiple concurrent logged-in persons with instant switching ([d684dba](https://github.com/martynvdijke/immich-swipe/commit/d684dba53707045c3652dd401b28807dd9e3a013))
+
 # [1.6.0](https://github.com/martynvdijke/immich-swipe/compare/v1.5.0...v1.6.0) (2026-08-08)
 
 
