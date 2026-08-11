@@ -32,3 +32,5 @@ server/server
 *.njsproj
 *.sln
 *.sw?
+openspec/
+.opencode/
