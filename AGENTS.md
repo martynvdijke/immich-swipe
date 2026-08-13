@@ -19,15 +19,19 @@
   - `IMMICH_SERVER_URL` (Default-Immich-URL)
   - `IMMICH_API_KEY_<N>_NAME` / `IMMICH_API_KEY_<N>_KEY` (optional; Auto-Login / User-Picker)
   - Legacy-Fallback: `IMMICH_USER_<N>_NAME` / `IMMICH_USER_<N>_API_KEY`
-  - `IMMICH_SESSIONS_DB` (optional): Pfad zu einer SQLite-Datei; persistiert Swipe-Sessions (Token + API-Key/Access-Token) über Server-Neustarts hinweg. Leer = nur In-Memory (Login nach jedem Neustart nötig). Datei enthält Immich-Credentials im Klartext → wie Secrets behandeln. Siehe `server/main.go` `SessionStore` (write-through, Startup-Restore + Expired-Purge, Cleanup löscht auch DB-Zeilen).
+  - `IMMICH_SESSIONS_DB` (optional): Pfad zu einer SQLite-Datei; persistiert Swipe-Sessions (Token + API-Key/Access-Token) **und lokale Account-Passwörter (PBKDF2-gehasht)** über Server-Neustarts hinweg. Leer = nur In-Memory (Login nach jedem Neustart nötig). Datei enthält Immich-Credentials im Klartext → wie Secrets behandeln. Siehe `server/main.go` `SessionStore` (write-through, Startup-Restore + Expired-Purge, Cleanup löscht auch DB-Zeilen) und `server/accounts.go` `AccountStore`.
+- Lokale Swipe-Accounts (`server/accounts.go`): jeder Eingeloggte kann in den Settings (Account password) ein Passwort setzen → `POST /api/auth/account` (nur apiKey-Sessions; accessToken-Sessions → 400 `unsupported_mode`; Passwort ≥8 Zeichen; Änderung verlangt `currentPassword`). `NewAccountStore(db, envUsers, defaultServerURL)` migriert Env-User automatisch (INSERT ... ON CONFLICT DO UPDATE SET api_key — überschreibt NIE gesetzte Passwörter). Hashing: `pbkdf2$<iter>$<saltHex>$<keyHex>` (600000 Iterationen, 16B Salt, SHA-256, constant-time Vergleich).
 - Verhalten:
   - 1 Env-User: Auto-Login
   - >1 Env-User: User-Auswahl (`/select-user`); Link „Sign in with Immich account“ → `/login`
-  - keine Env-Keys: Login (`/login`) mit Tabs **Immich account** (email/password) oder **API key**
+  - keine Env-Keys: Login (`/login`) mit Tabs **Swipe account** (userName/password), **Immich account** (email/password) oder **API key**
+  - Hat ein Env-User ein Account-Passwort gesetzt: Auto-Login/User-Picker leitet zu `/login` um und befüllt den Swipe-Tab vor (gesteuert über `authStore.pendingPasswordUser`, NICHT über URL-Query — vue-router 5.2.0 wirft Query bei Redirects auf denselben Pfad weg)
 - Login-API `POST /api/auth/login` Body-Varianten (mutually exclusive):
-  - `{ "userName" }` → Env-API-Key-Session
+  - `{ "userName" }` → Env-API-Key-Session (401 `password_required`, wenn der Account ein Passwort hat)
+  - `{ "userName", "password", "serverUrl?" }` → lokaler Account-Login (401-Codes: `unknown_user` / `password_not_set` / `invalid_password`; nutzt die gebundene Immich-API-Key)
   - `{ "apiKey", "serverUrl?" }` → manuelle API-Key-Session
   - `{ "email", "password", "serverUrl?" }` → Immich Password-Login → Access-Token-Session
+  - Alle Erfolgsantworten enthalten `mode` (`apiKey` | `accessToken`); Fehlerantworten optional `code`
 - Session-Modi (server-side only):
   - `apiKey`: Proxy setzt `x-api-key`
   - `accessToken`: Proxy setzt `Authorization: Bearer <immich-access-token>`
@@ -39,7 +43,7 @@
   - Review-Cache: `immich-swipe-reviewed:<server>:<user>` (bereits gesehene IDs + keep/delete)
   - Preferences: `immich-swipe-preferences:<server>:<user>` (Reihenfolge, Album-Hotkeys, Scope, Person)
 - **Multi-Person-Sessions**: mehrere Personen können gleichzeitig eingeloggt sein; Header-Switcher (User-Badge) wechselt aktiv; „Add person“ → `/login` ohne andere Sessions zu verlieren; Logout entfernt nur die eine Person und fällt auf die nächste zurück; 401 entfernt nur die tote Session (`removeActiveSession`). Alle pro-User-Stores (ui/preferences/reviewed/observability) hängen an `authStore.immichServerUrl`/`currentUserName` (Computed aus aktiver Session) und laden beim Wechsel neu.
-- Credential-Login braucht Immich Password-Login enabled; OAuth/SSO out of scope.
+- Credential-Login braucht Immich Password-Login enabled; OAuth/SSO out of scope. Account-Passwörter sind rein lokal (Swipe-eigene Auth, kein Immich-Kontakt beim Passwort-Check).
 
 ## API/Proxy
 - Frontend ruft nur das Go-Backend unter `/api/...` auf mit `Authorization: Bearer <swipe-session>`.
@@ -76,10 +80,10 @@
 ## Code-Map (wichtigste Stellen)
 - Routing/Auth:
   - `src/router/index.ts` (Guard: Restore letzte Session bei Reload, Redirects je nach Login/Env-Konfig, autoLoginBlocked; `/login` ist auch eingeloggt erreichbar = Add-Person-Flow)
-  - `src/stores/auth.ts` (Multi-Session-Registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithUser`/`loginManual`/`loginWithCredentials`; `sessionToken`/`currentUserName`/`immichServerUrl` sind Computed aus aktiver Session)
-  - `src/views/LoginView.vue` (Account- vs API-Key-Tabs)
+  - `src/stores/auth.ts` (Multi-Session-Registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithUser`/`loginManual`/`loginWithCredentials`/`loginWithAccount`/`setAccountPassword`; `sessionToken`/`currentUserName`/`immichServerUrl`/`activeSessionMode`/`pendingPasswordUser` aus aktiver Session)
+  - `src/views/LoginView.vue` (Swipe-Account- vs Immich-Account- vs API-Key-Tabs)
   - `src/components/AppHeader.vue` (Person-Switcher-Dropdown: Liste aller Sessions, aktive Markierung, Sign out pro Person, Add person)
-  - `server/main.go` (Sessions, Login, Proxy, Logout)
+  - `server/main.go` (Sessions, Login, Proxy, Logout) + `server/accounts.go` (AccountStore, Passwort-Hashing, Env-User-Migration)
   - Tests: `tests/helpers/seedAuth.ts` (`seedAuthSession`/`seedAuthSessions` — MUSS vor erstem `useAuthStore()` laufen)
 - Immich-Integration:
   - `src/composables/useImmich.ts` (Random Asset inkl. Skip-Videos Filter, Delete/Restore, Undo zeigt gelöschtes Asset wieder, Preload)

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 
-type LoginMode = 'account' | 'apiKey'
+type LoginMode = 'account' | 'apiKey' | 'swipe'
 
+const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
@@ -15,8 +16,27 @@ const serverUrl = ref(authStore.immichServerUrl || authStore.defaultServerUrl ||
 const email = ref('')
 const password = ref('')
 const apiKey = ref('')
+const userName = ref('')
 const error = ref('')
 const isSubmitting = ref(false)
+
+// Pre-fill the user name when the router redirected here because the account
+// password is required (auto-login via userName alone is disabled), or when a
+// single env user exists.
+const pendingUser = authStore.pendingPasswordUser
+if (pendingUser) {
+  userName.value = pendingUser
+  loginMode.value = 'swipe'
+  authStore.pendingPasswordUser = null
+} else {
+  const queryUser = typeof route.query.user === 'string' ? route.query.user : ''
+  if (queryUser) {
+    userName.value = queryUser
+    loginMode.value = 'swipe'
+  } else if (authStore.envUsers.length === 1) {
+    userName.value = authStore.envUsers[0]
+  }
+}
 
 function setMode(mode: LoginMode) {
   loginMode.value = mode
@@ -46,6 +66,30 @@ async function handleSubmit() {
 
     const result = await authStore.loginWithCredentials(
       email.value.trim(),
+      password.value,
+      serverUrl.value.trim(),
+    )
+
+    if (result.ok) {
+      uiStore.toast('Connected successfully!', 'success')
+      router.push('/')
+    } else {
+      error.value = result.error
+    }
+  } else if (loginMode.value === 'swipe') {
+    if (!userName.value.trim()) {
+      error.value = 'Please enter your user name'
+      isSubmitting.value = false
+      return
+    }
+    if (!password.value) {
+      error.value = 'Please enter your password'
+      isSubmitting.value = false
+      return
+    }
+
+    const result = await authStore.loginWithAccount(
+      userName.value.trim(),
       password.value,
       serverUrl.value.trim(),
     )
@@ -92,7 +136,7 @@ async function handleSubmit() {
 
       <!-- Mode toggle -->
       <div
-        class="mb-6 grid grid-cols-2 gap-1 p-1 rounded-xl border"
+        class="mb-6 grid grid-cols-3 gap-1 p-1 rounded-xl border"
         :class="uiStore.isDarkMode ? 'border-gray-800 bg-gray-950' : 'border-gray-200 bg-gray-50'"
         role="tablist"
         aria-label="Login method"
@@ -120,6 +164,18 @@ async function handleSubmit() {
           @click="setMode('apiKey')"
         >
           API key
+        </button>
+        <button
+          type="button"
+          role="tab"
+          :aria-selected="loginMode === 'swipe'"
+          class="py-2 px-3 rounded-lg text-sm font-medium transition-colors"
+          :class="loginMode === 'swipe'
+            ? (uiStore.isDarkMode ? 'bg-white text-black' : 'bg-black text-white')
+            : (uiStore.isDarkMode ? 'text-gray-400 hover:text-white' : 'text-gray-600 hover:text-black')"
+          @click="setMode('swipe')"
+        >
+          Swipe account
         </button>
       </div>
 
@@ -187,6 +243,52 @@ async function handleSubmit() {
               :class="uiStore.isDarkMode ? 'text-gray-500' : 'text-gray-500'"
             >
               Uses Immich password login. Password login must be enabled on your Immich server.
+            </p>
+          </div>
+        </template>
+
+        <!-- Swipe account fields -->
+        <template v-else-if="loginMode === 'swipe'">
+          <div>
+            <label for="userName" class="block text-sm font-medium mb-2"
+              :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-700'"
+            >
+              User name
+            </label>
+            <input
+              id="userName"
+              v-model="userName"
+              type="text"
+              placeholder="Your user name"
+              autocomplete="username"
+              class="w-full px-4 py-3 rounded-lg border focus:outline-none focus:ring-2 transition-colors"
+              :class="uiStore.isDarkMode
+                ? 'bg-gray-900 border-gray-700 text-white placeholder-gray-500 focus:ring-blue-500 focus:border-blue-500'
+                : 'bg-white border-gray-300 text-black placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500'"
+            />
+          </div>
+
+          <div>
+            <label for="password" class="block text-sm font-medium mb-2"
+              :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-700'"
+            >
+              Password
+            </label>
+            <input
+              id="password"
+              v-model="password"
+              type="password"
+              placeholder="Your Swipe account password"
+              autocomplete="current-password"
+              class="w-full px-4 py-3 rounded-lg border focus:outline-none focus:ring-2 transition-colors"
+              :class="uiStore.isDarkMode
+                ? 'bg-gray-900 border-gray-700 text-white placeholder-gray-500 focus:ring-blue-500 focus:border-blue-500'
+                : 'bg-white border-gray-300 text-black placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500'"
+            />
+            <p class="mt-2 text-xs"
+              :class="uiStore.isDarkMode ? 'text-gray-500' : 'text-gray-500'"
+            >
+              Uses the password set for your local Swipe account (Settings → Account).
             </p>
           </div>
         </template>

@@ -365,6 +365,7 @@ func generateToken() string {
 type Server struct {
 	config    Config
 	session   *SessionStore
+	accounts  *AccountStore
 	stats     *StatsStore
 	transport http.RoundTripper // optional instrumented transport for the reverse proxy
 }
@@ -372,9 +373,13 @@ type Server struct {
 func NewServer(cfg Config) *Server {
 	s := &Server{
 		config:  cfg,
-		session: NewSessionStore(cfg.SessionDBFile),
 		stats:   NewStatsStore(cfg.StatsFile),
 	}
+	// Sessions and accounts share one SQLite handle (both nil when running
+	// in-memory); the account store migrates env-configured users into
+	// accounts so existing users keep working.
+	s.session = NewSessionStore(cfg.SessionDBFile)
+	s.accounts = NewAccountStore(s.session.db, cfg.Users, cfg.ServerURL)
 	// Restore persisted stats on startup when a stats file is configured.
 	// On any file error we log a warning and continue with in-memory only.
 	if cfg.StatsFile != "" {
@@ -400,6 +405,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case path == "/api/auth/config":
 		s.configHandler(w, r)
+
+	case path == "/api/auth/account":
+		s.authMiddleware(http.HandlerFunc(s.accountHandler)).ServeHTTP(w, r)
 
 	case path == "/api/trmnl/stats":
 		// Public Trmnl e-ink polling endpoint. Registered before the /api/
@@ -511,8 +519,8 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either userName or apiKey, not both"})
 		return
 	}
-	if hasPassword && !hasEmail {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password requires email"})
+	if hasPassword && !hasEmail && !hasUserName {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password requires email or userName"})
 		return
 	}
 	if hasEmail && !hasPassword {
@@ -520,19 +528,25 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1) Env user by name → API-key session
+	// 1) Local account by name + password → API-key session
+	if hasUserName && hasPassword {
+		s.loginWithAccount(w, req.UserName, req.Password, req.ServerURL)
+		return
+	}
+
+	// 2) Env user by name → API-key session
 	if hasUserName {
 		s.loginWithEnvUser(w, req.UserName)
 		return
 	}
 
-	// 2) Manual API key → API-key session
+	// 3) Manual API key → API-key session
 	if hasAPIKey {
 		s.loginWithAPIKey(w, req.APIKey, req.ServerURL)
 		return
 	}
 
-	// 3) Immich email/password → access-token session
+	// 4) Immich email/password → access-token session
 	if hasEmail {
 		s.loginWithCredentials(w, req.Email, req.Password, req.ServerURL)
 		return
@@ -541,7 +555,65 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide userName, apiKey, or email/password"})
 }
 
+// loginWithAccount authenticates against the local accounts table: the
+// userName/password pair must match an existing account. Migrated env users
+// can only be claimed once a password was set (Settings → Account password);
+// until then auto-login via userName alone keeps working. Never logs the
+// password.
+func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, serverURL string) {
+	if serverURL == "" {
+		serverURL = s.config.ServerURL
+	}
+	if serverURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no server URL configured"})
+		return
+	}
+
+	account, ok := s.accounts.VerifyPassword(serverURL, userName, password)
+	if !ok {
+		if _, exists := s.accounts.Get(serverURL, userName); !exists {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unknown user", "code": "unknown_user"})
+			return
+		}
+		if !s.accounts.HasPassword(serverURL, userName) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no password set for this account", "code": "password_not_set"})
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid password", "code": "invalid_password"})
+		return
+	}
+
+	valid, name, err := s.validateAPIKey(serverURL, account.APIKey)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
+		return
+	}
+	if !valid {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key"})
+		return
+	}
+	if name != "" {
+		account.UserName = name
+	}
+
+	token := s.session.CreateAPIKey(account.UserName, account.APIKey, serverURL)
+	log.Printf("Login: mode=apiKey user=%q session=%s…", account.UserName, token[:12])
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token":     token,
+		"userName":  account.UserName,
+		"serverUrl": serverURL,
+		"mode":      "apiKey",
+	})
+}
+
 func (s *Server) loginWithEnvUser(w http.ResponseWriter, userName string) {
+	// A person who has set an account password must use it: the unauthenticated
+	// userName auto-login is disabled for that account.
+	if s.config.ServerURL != "" && s.accounts.HasPassword(s.config.ServerURL, userName) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "password required", "code": "password_required"})
+		return
+	}
+
 	var apiKey string
 	found := false
 	for _, u := range s.config.Users {
@@ -580,6 +652,7 @@ func (s *Server) loginWithEnvUser(w http.ResponseWriter, userName string) {
 		"token":     token,
 		"userName":  userName,
 		"serverUrl": serverURL,
+		"mode":      "apiKey",
 	})
 }
 
@@ -613,6 +686,7 @@ func (s *Server) loginWithAPIKey(w http.ResponseWriter, apiKey, serverURL string
 		"token":     token,
 		"userName":  userName,
 		"serverUrl": serverURL,
+		"mode":      "apiKey",
 	})
 }
 
@@ -659,7 +733,64 @@ func (s *Server) loginWithCredentials(w http.ResponseWriter, email, password, se
 		"token":     token,
 		"userName":  userName,
 		"serverUrl": serverURL,
+		"mode":      "accessToken",
 	})
+}
+
+// accountHandler lets an authenticated person set or change the password for
+// their local account, binding their session's Immich API key to it. Only
+// API-key sessions can do this: access tokens are ephemeral and cannot be
+// re-validated on later account logins.
+func (s *Server) accountHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	session := sessionFromContext(r.Context())
+	if session == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no session"})
+		return
+	}
+	if session.Mode != AuthModeAPIKey {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "password accounts are only available for API-key sessions; log in with an Immich API key first",
+			"code":  "unsupported_mode",
+		})
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot read request body"})
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		Password        string `json:"password"`
+		CurrentPassword string `json:"currentPassword"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if len(req.Password) < 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters", "code": "weak_password"})
+		return
+	}
+
+	// Changing an existing password requires the current one.
+	if s.accounts.HasPassword(session.ServerURL, session.UserName) {
+		if _, ok := s.accounts.VerifyPassword(session.ServerURL, session.UserName, req.CurrentPassword); !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password required", "code": "current_password_required"})
+			return
+		}
+	}
+
+	s.accounts.SetPassword(session.ServerURL, session.UserName, session.APIKey, req.Password)
+	log.Printf("Account: password set for user=%q server=%q", session.UserName, session.ServerURL)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 type immichLoginResponse struct {

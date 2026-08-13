@@ -14,7 +14,7 @@ import router from '@/router'
  *  - 5.5 manual login mode: no env users -> manual /login, no loop
  */
 
-async function stubBackend(users: string[], loginOk = true) {
+async function stubBackend(users: string[], loginOk = true, passwordRequired = false) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url.includes('/api/auth/config')) {
@@ -25,13 +25,17 @@ async function stubBackend(users: string[], loginOk = true) {
     }
     if (url.includes('/api/auth/login')) {
       if (!loginOk) {
-        return new Response(JSON.stringify({ error: 'unknown user' }), {
-          status: 401,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return new Response(
+          JSON.stringify(
+            passwordRequired
+              ? { error: 'password required', code: 'password_required' }
+              : { error: 'unknown user' },
+          ),
+          { status: 401, headers: { 'Content-Type': 'application/json' } },
+        )
       }
       return new Response(
-        JSON.stringify({ token: 'session-x', userName: 'Alice', serverUrl: 'https://immich' }),
+        JSON.stringify({ token: 'session-x', userName: 'Alice', serverUrl: 'https://immich', mode: 'apiKey' }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       )
     }
@@ -147,6 +151,29 @@ describe('router guard login loop prevention', () => {
     expect(auth.isLoggedIn).toBe(false)
     expect(router.currentRoute.value.path).toBe('/login')
     expect(auth.autoLoginBlocked).toBe(false)
+  })
+
+  it('sends a single env user with an account password to /login with the user pre-filled', async () => {
+    await stubBackend(['Alice'], false, true)
+    const auth = useAuthStore()
+
+    await router.push('/')
+
+    expect(auth.isLoggedIn).toBe(false)
+    expect(auth.autoLoginBlocked).toBe(true)
+    expect(auth.pendingPasswordUser).toBe('Alice')
+    expect(router.currentRoute.value.path).toBe('/login')
+  })
+
+  it('sends a password-protected env user to /login from /select-user', async () => {
+    await stubBackend(['Alice'], false, true)
+    const auth = useAuthStore()
+
+    await router.push('/select-user')
+
+    expect(auth.isLoggedIn).toBe(false)
+    expect(auth.pendingPasswordUser).toBe('Alice')
+    expect(router.currentRoute.value.path).toBe('/login')
   })
 
   it('restores a persisted session on navigation (reload without re-login)', async () => {

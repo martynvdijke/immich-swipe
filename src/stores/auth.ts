@@ -5,16 +5,18 @@ const SESSIONS_STORAGE_KEY = 'immich-swipe-sessions'
 const ACTIVE_SESSION_KEY = 'immich-swipe-active-session'
 const LEGACY_STORAGE_KEY = 'immich-swipe-session'
 
-export type LoginMethod = 'env-user' | 'manual' | 'credentials'
+export type LoginMethod = 'env-user' | 'manual' | 'credentials' | 'account'
 
 export type LoginResult =
   | { ok: true }
-  | { ok: false; error: string }
+  | { ok: false; error: string; code?: string }
 
 interface SessionRecord {
   token: string
   userName: string
   serverUrl: string
+  /** Session mode as reported by the backend: 'apiKey' | 'accessToken'. */
+  mode?: string
 }
 
 export interface SessionInfo {
@@ -43,6 +45,10 @@ export const useAuthStore = defineStore('auth', () => {
   // Set by the 401 handler / failed auto-login to prevent the router guard
   // from re-attempting auto-login into an infinite loop.
   const autoLoginBlocked = ref(false)
+  // Set by the router guard when an env user's account has a password:
+  // the login page pre-fills the user name and switches to the Swipe-account
+  // tab. Cleared once the login page consumes it.
+  const pendingPasswordUser = ref<string | null>(null)
 
   const activeSession = computed<SessionRecord | null>(() => {
     if (!activeSessionKey.value) return null
@@ -59,6 +65,8 @@ export const useAuthStore = defineStore('auth', () => {
   const sessionToken = computed(() => activeSession.value?.token ?? null)
   const currentUserName = computed(() => activeSession.value?.userName ?? '')
   const immichServerUrl = computed(() => activeSession.value?.serverUrl ?? '')
+  /** 'apiKey' | 'accessToken' | '' (unknown/legacy sessions without mode). */
+  const activeSessionMode = computed(() => activeSession.value?.mode ?? '')
 
   const isLoggedIn = computed(() => activeSession.value !== null)
 
@@ -191,7 +199,11 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function applyLoginSuccess(data: { token?: string; userName?: string; serverUrl?: string }, fallbackUserName: string, fallbackServerUrl = '') {
+  function applyLoginSuccess(
+    data: { token?: string; userName?: string; serverUrl?: string; mode?: string },
+    fallbackUserName: string,
+    fallbackServerUrl = ''
+  ) {
     const token = data.token ?? null
     const userName = data.userName || fallbackUserName
     const serverUrl = data.serverUrl || fallbackServerUrl
@@ -201,7 +213,7 @@ export const useAuthStore = defineStore('auth', () => {
     const existing = sessionRecords.value.findIndex(
       (record) => sessionKey(record.serverUrl, record.userName) === key
     )
-    const record: SessionRecord = { token, userName, serverUrl }
+    const record: SessionRecord = { token, userName, serverUrl, mode: data.mode }
     if (existing >= 0) {
       // Upsert: same person on same server -> replace record in place.
       sessionRecords.value[existing] = record
@@ -213,31 +225,86 @@ export const useAuthStore = defineStore('auth', () => {
     autoLoginBlocked.value = false
   }
 
-  async function parseLoginError(res: Response, fallback: string): Promise<string> {
+  /** Parse a failed login/account response once, extracting the human-readable
+   *  error and the machine-readable backend code (e.g. 'password_required'). */
+  async function parseLoginResult(res: Response, fallback: string): Promise<{ error: string; code?: string }> {
     try {
       const data = await res.json()
-      if (data?.error && typeof data.error === 'string') {
-        return data.error
+      return {
+        error: data?.error && typeof data.error === 'string' ? data.error : fallback,
+        code: data?.code && typeof data.code === 'string' ? data.code : undefined,
       }
     } catch {
-      // ignore
+      return { error: fallback }
     }
-    return fallback
   }
 
-  async function loginWithUser(userName: string): Promise<boolean> {
+  async function loginWithUser(userName: string): Promise<LoginResult> {
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userName }),
       })
-      if (!res.ok) return false
+      if (!res.ok) {
+        const { error, code } = await parseLoginResult(res, 'Unknown user')
+        return { ok: false, error, code }
+      }
       const data = await res.json()
       applyLoginSuccess(data, userName)
-      return true
+      return { ok: true }
     } catch {
-      return false
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
+  /** Local account login: app-local userName + password against the backend
+   *  accounts table. */
+  async function loginWithAccount(userName: string, password: string, serverUrl: string): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userName, password, serverUrl }),
+      })
+      if (!res.ok) {
+        const fallback =
+          res.status === 401
+            ? 'Invalid user name or password'
+            : 'Failed to connect. Please check your user name, password, and server URL.'
+        const { error, code } = await parseLoginResult(res, fallback)
+        return { ok: false, error, code }
+      }
+      const data = await res.json()
+      applyLoginSuccess(data, userName, serverUrl)
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
+  /** Set or change the password of the active session's local account. */
+  async function setAccountPassword(currentPassword: string, newPassword: string): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/account', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader.value },
+        body: JSON.stringify({
+          ...(currentPassword ? { currentPassword } : {}),
+          password: newPassword,
+        }),
+      })
+      if (!res.ok) {
+        const fallback =
+          res.status === 400
+            ? 'Password must be at least 8 characters'
+            : 'Could not set the password. Please try again.'
+        const { error, code } = await parseLoginResult(res, fallback)
+        return { ok: false, error, code }
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
     }
   }
 
@@ -271,7 +338,8 @@ export const useAuthStore = defineStore('auth', () => {
             : res.status === 403
               ? 'Password login is disabled on this Immich server'
               : 'Failed to connect. Please check your server URL and credentials.'
-        return { ok: false, error: await parseLoginError(res, fallback) }
+        const { error } = await parseLoginResult(res, fallback)
+        return { ok: false, error }
       }
       const data = await res.json()
       applyLoginSuccess(data, email, serverUrl)
@@ -358,10 +426,12 @@ export const useAuthStore = defineStore('auth', () => {
     sessionToken,
     currentUserName,
     immichServerUrl,
+    activeSessionMode,
     envUsers,
     defaultServerUrl,
     serverVersion,
     autoLoginBlocked,
+    pendingPasswordUser,
     isLoggedIn,
     authHeader,
     sessions,
@@ -371,6 +441,8 @@ export const useAuthStore = defineStore('auth', () => {
     loginWithUser,
     loginManual,
     loginWithCredentials,
+    loginWithAccount,
+    setAccountPassword,
     switchTo,
     restoreLastActive,
     logout,

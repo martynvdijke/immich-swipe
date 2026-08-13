@@ -86,9 +86,18 @@ IMMICH_API_KEY_1_KEY=your-api-key-here
 Behavior:
 - 1 user configured: auto-login
 - >1 users configured: user selection screen (`/select-user`)
-- no API keys configured: login screen (`/login`) with Immich account or API key
+- no API keys configured: login screen (`/login`) with Swipe account, Immich account, or API key
 
 Env API keys are optional. Households can skip them and use Immich email/password login instead.
+
+### Local Swipe accounts (optional)
+
+Every person can give their own account a password once logged in: **Settings → Account password**. The password is stored PBKDF2-hashed in the sessions database (`IMMICH_SESSIONS_DB`) and is never sent to Immich.
+
+- Env-configured users are **migrated into local accounts automatically** at startup — existing API keys keep working, nothing to reconfigure.
+- Until a password is set, those accounts keep the existing auto-login / user-picker behavior.
+- Once a password is set, that account can only be signed in with **user name + password** on `/login` (the auto-login for that account is disabled).
+- A local account login uses the account's Immich API key server-side, exactly like an env-key login — the browser never sees it.
 
 Optional runtime variables:
 - `TRMNL_STATS_FILE` — path to persist keep/delete counters (see below)
@@ -143,12 +152,14 @@ services:
 
 On `/login` you can choose:
 
-1. **Immich account** (email + password + server URL)  
+1. **Swipe account** (user name + password + server URL)  
+   - Authenticates against the local accounts table (Settings → Account password)  
+   - Uses the account's Immich API key server-side — no Immich login round-trip
+2. **Immich account** (email + password + server URL)  
    - The Go backend calls Immich password login and stores the Immich access token server-side  
    - Requires password login enabled on Immich (`passwordLogin.enabled`)  
    - Multiple people can each sign in with their own Immich account on the same deployment
-
-2. **API key** (server URL + API key)  
+3. **API key** (server URL + API key)  
    - Same as before; useful for private/single-user setups or when password login is disabled
 
 Only opaque Swipe session tokens are kept in the browser — Immich passwords and access tokens never leave the backend.
@@ -188,7 +199,7 @@ services:
 
 The backend writes every session (token + Immich API key or access token) through to the database and restores non-expired sessions on startup; the 24h sliding expiry and logouts are persisted too.
 
-> **Security note:** the database file contains Immich credentials in plain text (API keys / access tokens). Treat it like a secrets file — keep it inside the container volume with restricted permissions and never commit it. The browser still only ever holds opaque Swipe session tokens.
+> **Security note:** the database file contains Immich credentials in plain text (API keys / access tokens) and PBKDF2-hashed local account passwords. Treat it like a secrets file — keep it inside the container volume with restricted permissions and never commit it. The browser still only ever holds opaque Swipe session tokens.
 
 
 ### Option C: SPA-only mode

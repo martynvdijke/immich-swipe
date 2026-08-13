@@ -11,6 +11,8 @@ export interface SeedSession {
   token: string
   userName: string
   serverUrl: string
+  /** Session mode: 'apiKey' | 'accessToken' (optional). */
+  mode?: string
 }
 
 const SESSIONS_KEY = 'immich-swipe-sessions'
@@ -21,8 +23,11 @@ export function sessionKey(serverUrl: string, userName: string): string {
 }
 
 /** Seed a single logged-in session and make it active. */
-export function seedAuthSession(token: string, userName: string, serverUrl: string) {
-  localStorage.setItem(SESSIONS_KEY, JSON.stringify([{ token, userName, serverUrl }]))
+export function seedAuthSession(token: string, userName: string, serverUrl: string, mode?: string) {
+  localStorage.setItem(
+    SESSIONS_KEY,
+    JSON.stringify(mode ? [{ token, userName, serverUrl, mode }] : [{ token, userName, serverUrl }]),
+  )
   localStorage.setItem(ACTIVE_KEY, sessionKey(serverUrl, userName))
 }
 

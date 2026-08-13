@@ -8,11 +8,15 @@ const authStore = useAuthStore()
 const uiStore = useUiStore()
 
 async function selectUser(userName: string) {
-  const success = await authStore.loginWithUser(userName)
-  
-  if (success) {
+  const result = await authStore.loginWithUser(userName)
+
+  if (result.ok) {
     uiStore.toast(`Welcome, ${userName}!`, 'success')
     router.push('/')
+  } else if (result.code === 'password_required') {
+    // The account has a password set: ask for it on the login page.
+    authStore.pendingPasswordUser = userName
+    router.push('/login')
   } else {
     uiStore.toast('Connection failed. Please check the configuration.', 'error')
   }
