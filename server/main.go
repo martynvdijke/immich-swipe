@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -33,19 +36,21 @@ type UserConfig struct {
 }
 
 type Config struct {
-	ServerURL  string
-	ListenAddr string
-	StaticDir  string
-	StatsFile  string // optional TRMNL stats persistence path ("" = memory only)
-	Users      []UserConfig
+	ServerURL     string
+	ListenAddr    string
+	StaticDir     string
+	StatsFile     string // optional TRMNL stats persistence path ("" = memory only)
+	SessionDBFile string // optional IMMICH_SESSIONS_DB SQLite path ("" = in-memory sessions)
+	Users         []UserConfig
 }
 
 func loadConfig() Config {
 	cfg := Config{
-		ListenAddr: getEnv("LISTEN_ADDR", ":8080"),
-		StaticDir:  getEnv("STATIC_DIR", "./dist"),
-		ServerURL:  os.Getenv("IMMICH_SERVER_URL"),
-		StatsFile:  os.Getenv("TRMNL_STATS_FILE"),
+		ListenAddr:    getEnv("LISTEN_ADDR", ":8080"),
+		StaticDir:     getEnv("STATIC_DIR", "./dist"),
+		ServerURL:     os.Getenv("IMMICH_SERVER_URL"),
+		StatsFile:     os.Getenv("TRMNL_STATS_FILE"),
+		SessionDBFile: os.Getenv("IMMICH_SESSIONS_DB"),
 	}
 	for i := 1; ; i++ {
 		// Primary naming: IMMICH_API_KEY_<N>_NAME / IMMICH_API_KEY_<N>_KEY
@@ -95,31 +100,150 @@ type Session struct {
 	UserID      string
 }
 
+// sessionTTL is the sliding session lifetime: every authenticated request
+// extends the session by this amount.
+const sessionTTL = 24 * time.Hour
+
+// SessionStore keeps sessions in an in-memory map (the hot read path). When a
+// database file path is configured, every mutation is additionally written
+// through to a SQLite database so sessions survive server restarts.
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	db       *sql.DB // nil = in-memory only
+	dbPath   string
 }
 
-func NewSessionStore() *SessionStore {
-	return &SessionStore{sessions: make(map[string]*Session)}
+const sessionsSchema = `
+CREATE TABLE IF NOT EXISTS sessions (
+	token        TEXT PRIMARY KEY,
+	user_name    TEXT NOT NULL,
+	server_url   TEXT NOT NULL,
+	mode         TEXT NOT NULL,
+	api_key      TEXT,
+	access_token TEXT,
+	user_email   TEXT,
+	user_id      TEXT,
+	expires_at   INTEGER NOT NULL
+);`
+
+// NewSessionStore returns a session store. When dbPath is non-empty it opens
+// (creating if needed) a SQLite database, migrates the schema, purges expired
+// rows, and restores all remaining sessions into memory. Any database error is
+// logged and degrades to in-memory only — the server must keep working.
+func NewSessionStore(dbPath string) *SessionStore {
+	s := &SessionStore{sessions: make(map[string]*Session), dbPath: dbPath}
+	if dbPath == "" {
+		return s
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		log.Printf("Warning: cannot open session database %s: %v (continuing in-memory)", dbPath, err)
+		return s
+	}
+	if err := db.Ping(); err != nil {
+		log.Printf("Warning: cannot reach session database %s: %v (continuing in-memory)", dbPath, err)
+		db.Close()
+		return s
+	}
+	if _, err := db.Exec(sessionsSchema); err != nil {
+		log.Printf("Warning: cannot migrate session database %s: %v (continuing in-memory)", dbPath, err)
+		db.Close()
+		return s
+	}
+	s.db = db
+
+	// Startup restore + purge: load non-expired sessions, drop expired rows.
+	now := time.Now().Unix()
+	rows, err := db.Query(`SELECT token, user_name, server_url, mode, api_key, access_token, user_email, user_id, expires_at FROM sessions`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				token, userName, serverURL, mode     string
+				apiKey, accessToken, userEmail, userID sql.NullString
+				expiresAt                              int64
+			)
+			if err := rows.Scan(&token, &userName, &serverURL, &mode, &apiKey, &accessToken, &userEmail, &userID, &expiresAt); err != nil {
+				log.Printf("Warning: skipping malformed session row: %v", err)
+				continue
+			}
+			if expiresAt <= now {
+				continue // expired; purged below
+			}
+			session := &Session{
+				UserName:    userName,
+				ServerURL:   serverURL,
+				Mode:        AuthMode(mode),
+				APIKey:      apiKey.String,
+				AccessToken: accessToken.String,
+				UserEmail:   userEmail.String,
+				UserID:      userID.String,
+				ExpiresAt:   time.Unix(expiresAt, 0),
+			}
+			if session.Mode != AuthModeAPIKey && session.Mode != AuthModeAccessToken {
+				log.Printf("Warning: skipping session row with unknown mode %q", mode)
+				continue
+			}
+			s.sessions[token] = session
+		}
+	} else {
+		log.Printf("Warning: cannot read session database %s: %v (continuing with empty store)", dbPath, err)
+	}
+	if _, err := db.Exec(`DELETE FROM sessions WHERE expires_at <= ?`, now); err != nil {
+		log.Printf("Warning: cannot purge expired sessions from %s: %v", dbPath, err)
+	}
+	return s
+}
+
+// Close releases the underlying database handle, if any.
+func (s *SessionStore) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		s.db.Close()
+		s.db = nil
+	}
+}
+
+// persistExpiry writes the session's current expiry to the database. Failures
+// are logged and ignored: the session stays valid in memory for the process
+// lifetime, it just may not survive the next restart.
+func (s *SessionStore) persistExpiry(token string, expiresAt time.Time) {
+	if s.db == nil {
+		return
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET expires_at = ? WHERE token = ?`, expiresAt.Unix(), token); err != nil {
+		log.Printf("Warning: cannot persist session expiry for %s…: %v", token[:12], err)
+	}
 }
 
 func (s *SessionStore) CreateAPIKey(userName, apiKey, serverURL string) string {
 	token := generateToken()
+	now := time.Now().Add(sessionTTL)
 	s.mu.Lock()
 	s.sessions[token] = &Session{
 		UserName:  userName,
 		APIKey:    apiKey,
 		ServerURL: serverURL,
 		Mode:      AuthModeAPIKey,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ExpiresAt: now,
 	}
 	s.mu.Unlock()
+	s.insertRow(token, &Session{
+		UserName:  userName,
+		APIKey:    apiKey,
+		ServerURL: serverURL,
+		Mode:      AuthModeAPIKey,
+		ExpiresAt: now,
+	})
 	return token
 }
 
 func (s *SessionStore) CreateAccessToken(userName, accessToken, serverURL, userEmail, userID string) string {
 	token := generateToken()
+	now := time.Now().Add(sessionTTL)
 	s.mu.Lock()
 	s.sessions[token] = &Session{
 		UserName:    userName,
@@ -128,10 +252,49 @@ func (s *SessionStore) CreateAccessToken(userName, accessToken, serverURL, userE
 		Mode:        AuthModeAccessToken,
 		UserEmail:   userEmail,
 		UserID:      userID,
-		ExpiresAt:   time.Now().Add(24 * time.Hour),
+		ExpiresAt:   now,
 	}
 	s.mu.Unlock()
+	s.insertRow(token, &Session{
+		UserName:    userName,
+		AccessToken: accessToken,
+		ServerURL:   serverURL,
+		Mode:        AuthModeAccessToken,
+		UserEmail:   userEmail,
+		UserID:      userID,
+		ExpiresAt:   now,
+	})
 	return token
+}
+
+// insertRow writes a session row to the database (INSERT OR REPLACE so
+// re-created tokens overwrite stale rows). Failures degrade to in-memory.
+func (s *SessionStore) insertRow(token string, session *Session) {
+	if s.db == nil {
+		return
+	}
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO sessions (token, user_name, server_url, mode, api_key, access_token, user_email, user_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		token,
+		session.UserName,
+		session.ServerURL,
+		string(session.Mode),
+		nullIfEmpty(session.APIKey),
+		nullIfEmpty(session.AccessToken),
+		nullIfEmpty(session.UserEmail),
+		nullIfEmpty(session.UserID),
+		session.ExpiresAt.Unix(),
+	)
+	if err != nil {
+		log.Printf("Warning: cannot persist session %s…: %v", token[:12], err)
+	}
+}
+
+func nullIfEmpty(v string) interface{} {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 func (s *SessionStore) Get(token string) (*Session, bool) {
@@ -145,12 +308,14 @@ func (s *SessionStore) Get(token string) (*Session, bool) {
 		s.mu.Lock()
 		delete(s.sessions, token)
 		s.mu.Unlock()
+		s.deleteRow(token)
 		return nil, false
 	}
 	// Sliding expiration
 	s.mu.Lock()
-	session.ExpiresAt = time.Now().Add(24 * time.Hour)
+	session.ExpiresAt = time.Now().Add(sessionTTL)
 	s.mu.Unlock()
+	s.persistExpiry(token, session.ExpiresAt)
 	return session, true
 }
 
@@ -158,16 +323,32 @@ func (s *SessionStore) Delete(token string) {
 	s.mu.Lock()
 	delete(s.sessions, token)
 	s.mu.Unlock()
+	s.deleteRow(token)
+}
+
+func (s *SessionStore) deleteRow(token string) {
+	if s.db == nil {
+		return
+	}
+	if _, err := s.db.Exec(`DELETE FROM sessions WHERE token = ?`, token); err != nil {
+		log.Printf("Warning: cannot delete session %s… from database: %v", token[:12], err)
+	}
 }
 
 func (s *SessionStore) Cleanup() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := time.Now()
 	for token, session := range s.sessions {
 		if now.After(session.ExpiresAt) {
 			delete(s.sessions, token)
 		}
+	}
+	s.mu.Unlock()
+	if s.db == nil {
+		return
+	}
+	if _, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at <= ?`, now.Unix()); err != nil {
+		log.Printf("Warning: cannot purge expired sessions: %v", err)
 	}
 }
 
@@ -191,7 +372,7 @@ type Server struct {
 func NewServer(cfg Config) *Server {
 	s := &Server{
 		config:  cfg,
-		session: NewSessionStore(),
+		session: NewSessionStore(cfg.SessionDBFile),
 		stats:   NewStatsStore(cfg.StatsFile),
 	}
 	// Restore persisted stats on startup when a stats file is configured.
@@ -952,6 +1133,11 @@ func main() {
 			log.Printf("  Trmnl stats persistence: %s", cfg.StatsFile)
 		} else {
 			log.Printf("  Trmnl stats: in-memory only (no TRMNL_STATS_FILE)")
+		}
+		if cfg.SessionDBFile != "" {
+			log.Printf("  Session persistence: %s", cfg.SessionDBFile)
+		} else {
+			log.Printf("  Sessions: in-memory only (no IMMICH_SESSIONS_DB; sessions lost on restart)")
 		}
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)

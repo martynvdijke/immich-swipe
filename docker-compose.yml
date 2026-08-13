@@ -28,6 +28,13 @@ services:
       #   volumes: [ "./data:/data" ]
       #   TRMNL_STATS_FILE=/data/trmnl-stats.json
       - TRMNL_STATS_FILE=${TRMNL_STATS_FILE:-}
+      # Session persistence (optional). Set IMMICH_SESSIONS_DB to a path on a
+      # mounted volume so logged-in users survive container restarts, e.g.:
+      #   volumes: [ "./data:/data" ]
+      #   IMMICH_SESSIONS_DB=/data/immich-swipe.db
+      # WARNING: the database contains Immich credentials (API keys / access
+      # tokens) in plain text — protect the volume accordingly.
+      - IMMICH_SESSIONS_DB=${IMMICH_SESSIONS_DB:-}
       # OpenTelemetry (OTLP) — leave unset to run without observability
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - OTEL_EXPORTER_OTLP_PROTOCOL=${OTEL_EXPORTER_OTLP_PROTOCOL:-}

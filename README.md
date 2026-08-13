@@ -90,6 +90,10 @@ Behavior:
 
 Env API keys are optional. Households can skip them and use Immich email/password login instead.
 
+Optional runtime variables:
+- `TRMNL_STATS_FILE` — path to persist keep/delete counters (see below)
+- `IMMICH_SESSIONS_DB` — path to a SQLite file that persists login sessions across restarts (see [Session persistence](#session-persistence))
+
 ### Option D: Trmnl e-ink display (keep/delete stats)
 
 A Trmnl e-ink plugin in [`trmnl/`](trmnl/) turns any [Trmnl](https://usetrmnl.com) device into a wall display of your swipe statistics. The Go backend counts actions as they flow through its reverse proxy and exposes them on a public polling endpoint.
@@ -162,6 +166,30 @@ Multiple people can be **logged in at the same time on one device/browser**. Eve
 Security note: keeping sessions in `localStorage` (instead of tab-scoped `sessionStorage`) is what allows instant switching after reloads; it means a successful XSS could read session tokens. Swipe session tokens are opaque, not Immich secrets, and expire server-side after 24h.
 
 From the multi-user picker (`/select-user`), use **Sign in with Immich account** for people who are not listed in env keys.
+
+### Session persistence
+
+Swipe sessions live **in the server's memory by default** and are lost when the server restarts — everyone then has to log in again. To keep all logged-in people signed in across server restarts, point `IMMICH_SESSIONS_DB` at a SQLite file:
+
+```bash
+IMMICH_SESSIONS_DB=/data/immich-swipe.db
+```
+
+With Docker Compose, bind-mount a directory and point the variable into it:
+
+```yaml
+services:
+  immich-swipe:
+    volumes:
+      - ./data:/data
+    environment:
+      - IMMICH_SESSIONS_DB=/data/immich-swipe.db
+```
+
+The backend writes every session (token + Immich API key or access token) through to the database and restores non-expired sessions on startup; the 24h sliding expiry and logouts are persisted too.
+
+> **Security note:** the database file contains Immich credentials in plain text (API keys / access tokens). Treat it like a secrets file — keep it inside the container volume with restricted permissions and never commit it. The browser still only ever holds opaque Swipe session tokens.
+
 
 ### Option C: SPA-only mode
 

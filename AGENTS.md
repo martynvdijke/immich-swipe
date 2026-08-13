@@ -19,6 +19,7 @@
   - `IMMICH_SERVER_URL` (Default-Immich-URL)
   - `IMMICH_API_KEY_<N>_NAME` / `IMMICH_API_KEY_<N>_KEY` (optional; Auto-Login / User-Picker)
   - Legacy-Fallback: `IMMICH_USER_<N>_NAME` / `IMMICH_USER_<N>_API_KEY`
+  - `IMMICH_SESSIONS_DB` (optional): Pfad zu einer SQLite-Datei; persistiert Swipe-Sessions (Token + API-Key/Access-Token) über Server-Neustarts hinweg. Leer = nur In-Memory (Login nach jedem Neustart nötig). Datei enthält Immich-Credentials im Klartext → wie Secrets behandeln. Siehe `server/main.go` `SessionStore` (write-through, Startup-Restore + Expired-Purge, Cleanup löscht auch DB-Zeilen).
 - Verhalten:
   - 1 Env-User: Auto-Login
   - >1 Env-User: User-Auswahl (`/select-user`); Link „Sign in with Immich account“ → `/login`
