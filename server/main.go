@@ -515,8 +515,8 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either email/password or userName, not both"})
 		return
 	}
-	if hasAPIKey && hasUserName {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either userName or apiKey, not both"})
+	if hasAPIKey && hasUserName && !hasPassword {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either userName or apiKey, not both (or add a password to create an account)"})
 		return
 	}
 	if hasPassword && !hasEmail && !hasUserName {
@@ -525,6 +525,14 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if hasEmail && !hasPassword {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email requires password"})
+		return
+	}
+
+	// 0) Create/claim a local account: userName + password + API key
+	//    → API-key session. New names are created; migrated env users can only
+	//    be claimed with the API key bound to their account.
+	if hasUserName && hasPassword && hasAPIKey {
+		s.loginWithAccountCreate(w, req.UserName, req.Password, req.APIKey, req.ServerURL)
 		return
 	}
 
@@ -601,6 +609,66 @@ func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, ser
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"token":     token,
 		"userName":  account.UserName,
+		"serverUrl": serverURL,
+		"mode":      "apiKey",
+	})
+}
+
+// loginWithAccountCreate creates or claims a local account in one step from
+// the login page: userName + password + Immich API key. Claim rules:
+//   - the name already has a password   → reject (password changes live in Settings)
+//   - the name exists without password  → only the API key bound to the account
+//     (e.g. a migrated env user) may claim it; a foreign key is rejected
+//   - the name is new                    → the API key is validated against Immich
+//
+// Never logs the password or the API key.
+func (s *Server) loginWithAccountCreate(w http.ResponseWriter, userName, password, apiKey, serverURL string) {
+	if len(password) < 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters", "code": "weak_password"})
+		return
+	}
+	if serverURL == "" {
+		serverURL = s.config.ServerURL
+	}
+	if serverURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no server URL configured"})
+		return
+	}
+
+	if account, exists := s.accounts.Get(serverURL, userName); exists {
+		if account.PasswordHash != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "this user name already has a password; sign in with it or change it in Settings",
+				"code":  "account_exists",
+			})
+			return
+		}
+		if account.APIKey != apiKey {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"error": "this user name is reserved for another API key",
+				"code":  "invalid_api_key",
+			})
+			return
+		}
+		// Migrated env user claiming their own account with the bound key.
+	} else {
+		valid, _, err := s.validateAPIKey(serverURL, apiKey)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
+			return
+		}
+		if !valid {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key", "code": "invalid_api_key"})
+			return
+		}
+	}
+
+	s.accounts.SetPassword(serverURL, userName, apiKey, password)
+	token := s.session.CreateAPIKey(userName, apiKey, serverURL)
+	log.Printf("Login: mode=apiKey (account created/claimed) user=%q session=%s…", userName, token[:12])
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token":     token,
+		"userName":  userName,
 		"serverUrl": serverURL,
 		"mode":      "apiKey",
 	})

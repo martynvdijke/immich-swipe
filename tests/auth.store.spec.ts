@@ -1143,3 +1143,103 @@ describe('auth store session persistence', () => {
     expect(stored[0].password).toBeUndefined()
   })
 })
+
+describe('auth store loginWithAccountCreate', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.stubGlobal('fetch', vi.fn())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
+  it('creates an account, logs in and stores the apiKey session mode', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/api/auth/login')) {
+        return new Response(
+          JSON.stringify({
+            token: 'created-session',
+            userName: 'Bob',
+            serverUrl: 'https://immich.example',
+            mode: 'apiKey',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response('not found', { status: 404 })
+    })
+
+    const auth = useAuthStore()
+    const result = await auth.loginWithAccountCreate('Bob', 'secret123', 'key-bob', 'https://immich.example')
+
+    expect(result).toEqual({ ok: true })
+    expect(auth.sessionToken).toBe('created-session')
+    expect(auth.currentUserName).toBe('Bob')
+    expect(auth.activeSessionMode).toBe('apiKey')
+    expect(auth.isLoggedIn).toBe(true)
+
+    const loginCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/auth/login'))
+    const init = loginCall?.[1] as RequestInit
+    expect(JSON.parse(String(init.body))).toEqual({
+      userName: 'Bob',
+      password: 'secret123',
+      apiKey: 'key-bob',
+      serverUrl: 'https://immich.example',
+    })
+  })
+
+  it('surfaces backend error codes (weak_password, invalid_api_key, account_exists)', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/api/auth/login')) {
+        return new Response(
+          JSON.stringify({ error: 'this user name already has a password', code: 'account_exists' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response('not found', { status: 404 })
+    })
+
+    const auth = useAuthStore()
+    const result = await auth.loginWithAccountCreate('Alice', 'secret123', 'key-alice', 'https://immich.example')
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'this user name already has a password',
+      code: 'account_exists',
+    })
+    expect(auth.isLoggedIn).toBe(false)
+  })
+
+  it('handles network failure', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockRejectedValue(new Error('network down'))
+
+    const auth = useAuthStore()
+    const result = await auth.loginWithAccountCreate('Bob', 'secret123', 'key-bob', 'https://immich.example')
+
+    expect(result).toEqual({ ok: false, error: 'Cannot reach server. Please try again.' })
+    expect(auth.isLoggedIn).toBe(false)
+  })
+})

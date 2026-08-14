@@ -5,7 +5,7 @@ const SESSIONS_STORAGE_KEY = 'immich-swipe-sessions'
 const ACTIVE_SESSION_KEY = 'immich-swipe-active-session'
 const LEGACY_STORAGE_KEY = 'immich-swipe-session'
 
-export type LoginMethod = 'env-user' | 'manual' | 'credentials' | 'account'
+export type LoginMethod = 'env-user' | 'manual' | 'credentials' | 'account' | 'account-create'
 
 export type LoginResult =
   | { ok: true }
@@ -284,8 +284,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   /** Set or change the password of the active session's local account. */
-  async function setAccountPassword(currentPassword: string, newPassword: string): Promise<LoginResult> {
-    try {
+  async function setAccountPassword(currentPassword: string, newPassword: string): Promise<LoginResult> {    try {
       const res = await fetch('/api/auth/account', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeader.value },
@@ -302,6 +301,38 @@ export const useAuthStore = defineStore('auth', () => {
         const { error, code } = await parseLoginResult(res, fallback)
         return { ok: false, error, code }
       }
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
+  /** One-step account creation from the login page: user name + password +
+   *  Immich API key. The backend validates the key, creates or claims the
+   *  local account (claiming a migrated env user requires the bound key),
+   *  and logs the person in with an API-key session. */
+  async function loginWithAccountCreate(
+    userName: string,
+    password: string,
+    apiKey: string,
+    serverUrl: string
+  ): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userName, password, apiKey, serverUrl }),
+      })
+      if (!res.ok) {
+        const fallback =
+          res.status === 401
+            ? 'Invalid API key'
+            : 'Could not create the account. Please check the user name, password, and API key.'
+        const { error, code } = await parseLoginResult(res, fallback)
+        return { ok: false, error, code }
+      }
+      const data = await res.json()
+      applyLoginSuccess(data, userName, serverUrl)
       return { ok: true }
     } catch {
       return { ok: false, error: 'Cannot reach server. Please try again.' }
@@ -442,6 +473,7 @@ export const useAuthStore = defineStore('auth', () => {
     loginManual,
     loginWithCredentials,
     loginWithAccount,
+    loginWithAccountCreate,
     setAccountPassword,
     switchTo,
     restoreLastActive,

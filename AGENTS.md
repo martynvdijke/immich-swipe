@@ -22,13 +22,14 @@
   - `IMMICH_SESSIONS_DB` (optional): Pfad zu einer SQLite-Datei; persistiert Swipe-Sessions (Token + API-Key/Access-Token) **und lokale Account-Passwörter (PBKDF2-gehasht)** über Server-Neustarts hinweg. Leer = nur In-Memory (Login nach jedem Neustart nötig). Datei enthält Immich-Credentials im Klartext → wie Secrets behandeln. Siehe `server/main.go` `SessionStore` (write-through, Startup-Restore + Expired-Purge, Cleanup löscht auch DB-Zeilen) und `server/accounts.go` `AccountStore`.
 - Lokale Swipe-Accounts (`server/accounts.go`): jeder Eingeloggte kann in den Settings (Account password) ein Passwort setzen → `POST /api/auth/account` (nur apiKey-Sessions; accessToken-Sessions → 400 `unsupported_mode`; Passwort ≥8 Zeichen; Änderung verlangt `currentPassword`). `NewAccountStore(db, envUsers, defaultServerURL)` migriert Env-User automatisch (INSERT ... ON CONFLICT DO UPDATE SET api_key — überschreibt NIE gesetzte Passwörter). Hashing: `pbkdf2$<iter>$<saltHex>$<keyHex>` (600000 Iterationen, 16B Salt, SHA-256, constant-time Vergleich).
 - Verhalten:
-  - 1 Env-User: Auto-Login
-  - >1 Env-User: User-Auswahl (`/select-user`); Link „Sign in with Immich account“ → `/login`
-  - keine Env-Keys: Login (`/login`) mit Tabs **Swipe account** (userName/password), **Immich account** (email/password) oder **API key**
-  - Hat ein Env-User ein Account-Passwort gesetzt: Auto-Login/User-Picker leitet zu `/login` um und befüllt den Swipe-Tab vor (gesteuert über `authStore.pendingPasswordUser`, NICHT über URL-Query — vue-router 5.2.0 wirft Query bei Redirects auf denselben Pfad weg)
+  - Kein aktives Session → **immer** `/login` (bewusst KEIN Auto-Login, auch bei genau 1 Env-User); die Login-Seite zeigt konfigurierte Env-User als One-Click-Buttons + manuelle Tabs
+  - `/select-user` existiert nicht mehr (Route redirectet auf `/`; nicht eingeloggte Besucher fängt der Guard auf `/login` ab)
+  - Login-Seite Tabs: **Swipe account** (userName/password), **Immich account** (email/password), **API key**, **Create account** (userName + password + API key in einem Schritt)
+  - Hat ein Env-User ein Account-Passwort gesetzt: One-Click-Picker leitet auf den Swipe-Tab um und befüllt ihn vor (gesteuert über `authStore.pendingPasswordUser`, NICHT über URL-Query — vue-router 5.2.0 wirft Query bei Redirects auf denselben Pfad weg)
 - Login-API `POST /api/auth/login` Body-Varianten (mutually exclusive):
   - `{ "userName" }` → Env-API-Key-Session (401 `password_required`, wenn der Account ein Passwort hat)
   - `{ "userName", "password", "serverUrl?" }` → lokaler Account-Login (401-Codes: `unknown_user` / `password_not_set` / `invalid_password`; nutzt die gebundene Immich-API-Key)
+  - `{ "userName", "password", "apiKey", "serverUrl?" }` → Account-Erstellung (400 `weak_password` bei <8 Zeichen; 400 `account_exists` wenn der Name schon ein Passwort hat; 401 `invalid_api_key` bei ungültigem/ fremdem Key — migrierte Env-User nur mit exakt ihrer gebundenen Key claimbar; legt den Account an und loggt ein)
   - `{ "apiKey", "serverUrl?" }` → manuelle API-Key-Session
   - `{ "email", "password", "serverUrl?" }` → Immich Password-Login → Access-Token-Session
   - Alle Erfolgsantworten enthalten `mode` (`apiKey` | `accessToken`); Fehlerantworten optional `code`
@@ -79,9 +80,9 @@
 
 ## Code-Map (wichtigste Stellen)
 - Routing/Auth:
-  - `src/router/index.ts` (Guard: Restore letzte Session bei Reload, Redirects je nach Login/Env-Konfig, autoLoginBlocked; `/login` ist auch eingeloggt erreichbar = Add-Person-Flow)
-  - `src/stores/auth.ts` (Multi-Session-Registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithUser`/`loginManual`/`loginWithCredentials`/`loginWithAccount`/`setAccountPassword`; `sessionToken`/`currentUserName`/`immichServerUrl`/`activeSessionMode`/`pendingPasswordUser` aus aktiver Session)
-  - `src/views/LoginView.vue` (Swipe-Account- vs Immich-Account- vs API-Key-Tabs)
+  - `src/router/index.ts` (Guard: Restore letzte Session bei Reload, kein Auto-Login — nicht eingeloggt → immer `/login`; `/select-user` redirectet auf `/`; `/login` ist auch eingeloggt erreichbar = Add-Person-Flow)
+  - `src/stores/auth.ts` (Multi-Session-Registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithUser`/`loginManual`/`loginWithCredentials`/`loginWithAccount`/`loginWithAccountCreate`/`setAccountPassword`; `sessionToken`/`currentUserName`/`immichServerUrl`/`activeSessionMode`/`pendingPasswordUser` aus aktiver Session)
+  - `src/views/LoginView.vue` (Env-User-Picker + Tabs: Swipe- vs Immich-Account vs API-Key vs Create Account)
   - `src/components/AppHeader.vue` (Person-Switcher-Dropdown: Liste aller Sessions, aktive Markierung, Sign out pro Person, Add person)
   - `server/main.go` (Sessions, Login, Proxy, Logout) + `server/accounts.go` (AccountStore, Passwort-Hashing, Env-User-Migration)
   - Tests: `tests/helpers/seedAuth.ts` (`seedAuthSession`/`seedAuthSessions` — MUSS vor erstem `useAuthStore()` laufen)

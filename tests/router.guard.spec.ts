@@ -4,14 +4,12 @@ import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
 
 /**
- * Router-guard loop-prevention tests (fix-login-session-loop).
+ * Router-guard tests (login-account-setup).
  *
- * The guard lives in src/router/index.ts and runs on every navigation. These
- * tests exercise the four end-to-end scenarios from the change's manual
- * verification tasks, automated:
- *  - 5.3 single env user: auto-login once, no loop when blocked / on failure
- *  - 5.4 multi env user: /select-user stays reachable even when blocked
- *  - 5.5 manual login mode: no env users -> manual /login, no loop
+ * The guard never auto-logs-in: a visit without an active session always lands
+ * on /login, which shows the configured env users as one-click options plus the
+ * manual login / account-creation forms. Sessions are restored on reload, and
+ * /login stays reachable while logged in (add-person flow).
  */
 
 async function stubBackend(users: string[], loginOk = true, passwordRequired = false) {
@@ -54,7 +52,7 @@ async function stubBackend(users: string[], loginOk = true, passwordRequired = f
   return fetchMock
 }
 
-describe('router guard login loop prevention', () => {
+describe('router guard: no auto-login, /login is the landing page', () => {
   beforeEach(async () => {
     setActivePinia(createPinia())
     sessionStorage.clear()
@@ -81,30 +79,17 @@ describe('router guard login loop prevention', () => {
     localStorage.setItem(
       'immich-swipe-sessions',
       JSON.stringify([
-        { token: 't-alice', userName: 'Alice', serverUrl: 'https://immich' },
-        { token: 't-bob', userName: 'Bob', serverUrl: 'https://immich' },
+        { token: 't-alice', userName: 'Alice', serverUrl: 'https://immich', mode: 'apiKey' },
+        { token: 't-bob', userName: 'Bob', serverUrl: 'https://immich', mode: 'apiKey' },
       ]),
     )
     localStorage.setItem('immich-swipe-active-session', 'https://immich|Alice')
     setActivePinia(createPinia())
   }
 
-  it('auto-logs-in a single env user when not blocked (5.3 happy path)', async () => {
+  it('does not auto-log-in a single env user: lands on /login', async () => {
     await stubBackend(['Alice'], true)
     const auth = useAuthStore()
-
-    await router.push('/')
-
-    expect(auth.isLoggedIn).toBe(true)
-    expect(auth.currentUserName).toBe('Alice')
-    expect(auth.autoLoginBlocked).toBe(false)
-    expect(router.currentRoute.value.path).toBe('/')
-  })
-
-  it('skips auto-login and redirects to /login when autoLoginBlocked is set (5.3 no loop)', async () => {
-    await stubBackend(['Alice'], true)
-    const auth = useAuthStore()
-    auth.autoLoginBlocked = true
     const loginSpy = vi.spyOn(auth, 'loginWithUser')
 
     await router.push('/')
@@ -114,35 +99,18 @@ describe('router guard login loop prevention', () => {
     expect(router.currentRoute.value.path).toBe('/login')
   })
 
-  it('trips the loop guard on failed auto-login and lands on /login (5.3 failure)', async () => {
-    await stubBackend(['Alice'], false)
-    const auth = useAuthStore()
-
-    await router.push('/')
-
-    expect(auth.autoLoginBlocked).toBe(true)
-    expect(auth.isLoggedIn).toBe(false)
-    expect(router.currentRoute.value.path).toBe('/login')
-
-    // A second navigation must not retry auto-login (loop broken).
-    const loginSpy = vi.spyOn(auth, 'loginWithUser')
-    await router.push('/login')
-    expect(loginSpy).not.toHaveBeenCalled()
-    expect(router.currentRoute.value.path).toBe('/login')
-  })
-
-  it('keeps /select-user reachable with multiple env users even when blocked (5.4)', async () => {
+  it('lands on /login with multiple env users (no /select-user redirect)', async () => {
     await stubBackend(['Alice', 'Bob'], true)
     const auth = useAuthStore()
-    auth.autoLoginBlocked = true
 
-    await router.push('/select-user')
+    await router.push('/')
 
     expect(auth.isLoggedIn).toBe(false)
-    expect(router.currentRoute.value.path).toBe('/select-user')
+    expect(router.currentRoute.value.path).toBe('/login')
+    expect(auth.envUsers).toEqual(['Alice', 'Bob'])
   })
 
-  it('stays on manual /login with no env users and never auto-logs-in (5.5)', async () => {
+  it('lands on /login with no env users', async () => {
     await stubBackend([], true)
     const auth = useAuthStore()
 
@@ -150,29 +118,15 @@ describe('router guard login loop prevention', () => {
 
     expect(auth.isLoggedIn).toBe(false)
     expect(router.currentRoute.value.path).toBe('/login')
-    expect(auth.autoLoginBlocked).toBe(false)
   })
 
-  it('sends a single env user with an account password to /login with the user pre-filled', async () => {
-    await stubBackend(['Alice'], false, true)
-    const auth = useAuthStore()
-
-    await router.push('/')
-
-    expect(auth.isLoggedIn).toBe(false)
-    expect(auth.autoLoginBlocked).toBe(true)
-    expect(auth.pendingPasswordUser).toBe('Alice')
-    expect(router.currentRoute.value.path).toBe('/login')
-  })
-
-  it('sends a password-protected env user to /login from /select-user', async () => {
-    await stubBackend(['Alice'], false, true)
+  it('redirects /select-user to /login when not logged in', async () => {
+    await stubBackend(['Alice'], true)
     const auth = useAuthStore()
 
     await router.push('/select-user')
 
     expect(auth.isLoggedIn).toBe(false)
-    expect(auth.pendingPasswordUser).toBe('Alice')
     expect(router.currentRoute.value.path).toBe('/login')
   })
 
@@ -202,7 +156,7 @@ describe('router guard login loop prevention', () => {
     expect(router.currentRoute.value.path).toBe('/login')
   })
 
-  it('redirects /select-user to home while a session is active', async () => {
+  it('redirects /select-user to / while a session is active', async () => {
     await stubBackend([], true)
     seedStoredSessions()
 

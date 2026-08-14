@@ -61,14 +61,8 @@ function signOutPerson(key: string) {
     // Another session became active automatically; identity watchers reload.
     uiStore.toast(`Signed out — switched to ${authStore.currentUserName}`, 'info')
   } else {
-    // No sessions left -> env-user selection, auto re-login, or manual login
-    if (authStore.envUsers.length > 1) {
-      router.push('/select-user')
-    } else if (authStore.envUsers.length === 1) {
-      router.push('/')
-    } else {
-      router.push('/login')
-    }
+    // No sessions left -> the login page (shows configured users + manual forms)
+    router.push('/login')
   }
 }
 
