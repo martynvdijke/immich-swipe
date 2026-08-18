@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -33,19 +36,21 @@ type UserConfig struct {
 }
 
 type Config struct {
-	ServerURL  string
-	ListenAddr string
-	StaticDir  string
-	StatsFile  string // optional TRMNL stats persistence path ("" = memory only)
-	Users      []UserConfig
+	ServerURL     string
+	ListenAddr    string
+	StaticDir     string
+	StatsFile     string // optional TRMNL stats persistence path ("" = memory only)
+	SessionDBFile string // optional IMMICH_SESSIONS_DB SQLite path ("" = in-memory sessions)
+	Users         []UserConfig
 }
 
 func loadConfig() Config {
 	cfg := Config{
-		ListenAddr: getEnv("LISTEN_ADDR", ":8080"),
-		StaticDir:  getEnv("STATIC_DIR", "./dist"),
-		ServerURL:  os.Getenv("IMMICH_SERVER_URL"),
-		StatsFile:  os.Getenv("TRMNL_STATS_FILE"),
+		ListenAddr:    getEnv("LISTEN_ADDR", ":8080"),
+		StaticDir:     getEnv("STATIC_DIR", "./dist"),
+		ServerURL:     os.Getenv("IMMICH_SERVER_URL"),
+		StatsFile:     os.Getenv("TRMNL_STATS_FILE"),
+		SessionDBFile: os.Getenv("IMMICH_SESSIONS_DB"),
 	}
 	for i := 1; ; i++ {
 		// Primary naming: IMMICH_API_KEY_<N>_NAME / IMMICH_API_KEY_<N>_KEY
@@ -95,31 +100,150 @@ type Session struct {
 	UserID      string
 }
 
+// sessionTTL is the sliding session lifetime: every authenticated request
+// extends the session by this amount.
+const sessionTTL = 24 * time.Hour
+
+// SessionStore keeps sessions in an in-memory map (the hot read path). When a
+// database file path is configured, every mutation is additionally written
+// through to a SQLite database so sessions survive server restarts.
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	db       *sql.DB // nil = in-memory only
+	dbPath   string
 }
 
-func NewSessionStore() *SessionStore {
-	return &SessionStore{sessions: make(map[string]*Session)}
+const sessionsSchema = `
+CREATE TABLE IF NOT EXISTS sessions (
+	token        TEXT PRIMARY KEY,
+	user_name    TEXT NOT NULL,
+	server_url   TEXT NOT NULL,
+	mode         TEXT NOT NULL,
+	api_key      TEXT,
+	access_token TEXT,
+	user_email   TEXT,
+	user_id      TEXT,
+	expires_at   INTEGER NOT NULL
+);`
+
+// NewSessionStore returns a session store. When dbPath is non-empty it opens
+// (creating if needed) a SQLite database, migrates the schema, purges expired
+// rows, and restores all remaining sessions into memory. Any database error is
+// logged and degrades to in-memory only — the server must keep working.
+func NewSessionStore(dbPath string) *SessionStore {
+	s := &SessionStore{sessions: make(map[string]*Session), dbPath: dbPath}
+	if dbPath == "" {
+		return s
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		log.Printf("Warning: cannot open session database %s: %v (continuing in-memory)", dbPath, err)
+		return s
+	}
+	if err := db.Ping(); err != nil {
+		log.Printf("Warning: cannot reach session database %s: %v (continuing in-memory)", dbPath, err)
+		db.Close()
+		return s
+	}
+	if _, err := db.Exec(sessionsSchema); err != nil {
+		log.Printf("Warning: cannot migrate session database %s: %v (continuing in-memory)", dbPath, err)
+		db.Close()
+		return s
+	}
+	s.db = db
+
+	// Startup restore + purge: load non-expired sessions, drop expired rows.
+	now := time.Now().Unix()
+	rows, err := db.Query(`SELECT token, user_name, server_url, mode, api_key, access_token, user_email, user_id, expires_at FROM sessions`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				token, userName, serverURL, mode     string
+				apiKey, accessToken, userEmail, userID sql.NullString
+				expiresAt                              int64
+			)
+			if err := rows.Scan(&token, &userName, &serverURL, &mode, &apiKey, &accessToken, &userEmail, &userID, &expiresAt); err != nil {
+				log.Printf("Warning: skipping malformed session row: %v", err)
+				continue
+			}
+			if expiresAt <= now {
+				continue // expired; purged below
+			}
+			session := &Session{
+				UserName:    userName,
+				ServerURL:   serverURL,
+				Mode:        AuthMode(mode),
+				APIKey:      apiKey.String,
+				AccessToken: accessToken.String,
+				UserEmail:   userEmail.String,
+				UserID:      userID.String,
+				ExpiresAt:   time.Unix(expiresAt, 0),
+			}
+			if session.Mode != AuthModeAPIKey && session.Mode != AuthModeAccessToken {
+				log.Printf("Warning: skipping session row with unknown mode %q", mode)
+				continue
+			}
+			s.sessions[token] = session
+		}
+	} else {
+		log.Printf("Warning: cannot read session database %s: %v (continuing with empty store)", dbPath, err)
+	}
+	if _, err := db.Exec(`DELETE FROM sessions WHERE expires_at <= ?`, now); err != nil {
+		log.Printf("Warning: cannot purge expired sessions from %s: %v", dbPath, err)
+	}
+	return s
+}
+
+// Close releases the underlying database handle, if any.
+func (s *SessionStore) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db != nil {
+		s.db.Close()
+		s.db = nil
+	}
+}
+
+// persistExpiry writes the session's current expiry to the database. Failures
+// are logged and ignored: the session stays valid in memory for the process
+// lifetime, it just may not survive the next restart.
+func (s *SessionStore) persistExpiry(token string, expiresAt time.Time) {
+	if s.db == nil {
+		return
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET expires_at = ? WHERE token = ?`, expiresAt.Unix(), token); err != nil {
+		log.Printf("Warning: cannot persist session expiry for %s…: %v", token[:12], err)
+	}
 }
 
 func (s *SessionStore) CreateAPIKey(userName, apiKey, serverURL string) string {
 	token := generateToken()
+	now := time.Now().Add(sessionTTL)
 	s.mu.Lock()
 	s.sessions[token] = &Session{
 		UserName:  userName,
 		APIKey:    apiKey,
 		ServerURL: serverURL,
 		Mode:      AuthModeAPIKey,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ExpiresAt: now,
 	}
 	s.mu.Unlock()
+	s.insertRow(token, &Session{
+		UserName:  userName,
+		APIKey:    apiKey,
+		ServerURL: serverURL,
+		Mode:      AuthModeAPIKey,
+		ExpiresAt: now,
+	})
 	return token
 }
 
 func (s *SessionStore) CreateAccessToken(userName, accessToken, serverURL, userEmail, userID string) string {
 	token := generateToken()
+	now := time.Now().Add(sessionTTL)
 	s.mu.Lock()
 	s.sessions[token] = &Session{
 		UserName:    userName,
@@ -128,10 +252,49 @@ func (s *SessionStore) CreateAccessToken(userName, accessToken, serverURL, userE
 		Mode:        AuthModeAccessToken,
 		UserEmail:   userEmail,
 		UserID:      userID,
-		ExpiresAt:   time.Now().Add(24 * time.Hour),
+		ExpiresAt:   now,
 	}
 	s.mu.Unlock()
+	s.insertRow(token, &Session{
+		UserName:    userName,
+		AccessToken: accessToken,
+		ServerURL:   serverURL,
+		Mode:        AuthModeAccessToken,
+		UserEmail:   userEmail,
+		UserID:      userID,
+		ExpiresAt:   now,
+	})
 	return token
+}
+
+// insertRow writes a session row to the database (INSERT OR REPLACE so
+// re-created tokens overwrite stale rows). Failures degrade to in-memory.
+func (s *SessionStore) insertRow(token string, session *Session) {
+	if s.db == nil {
+		return
+	}
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO sessions (token, user_name, server_url, mode, api_key, access_token, user_email, user_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		token,
+		session.UserName,
+		session.ServerURL,
+		string(session.Mode),
+		nullIfEmpty(session.APIKey),
+		nullIfEmpty(session.AccessToken),
+		nullIfEmpty(session.UserEmail),
+		nullIfEmpty(session.UserID),
+		session.ExpiresAt.Unix(),
+	)
+	if err != nil {
+		log.Printf("Warning: cannot persist session %s…: %v", token[:12], err)
+	}
+}
+
+func nullIfEmpty(v string) interface{} {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 func (s *SessionStore) Get(token string) (*Session, bool) {
@@ -145,12 +308,14 @@ func (s *SessionStore) Get(token string) (*Session, bool) {
 		s.mu.Lock()
 		delete(s.sessions, token)
 		s.mu.Unlock()
+		s.deleteRow(token)
 		return nil, false
 	}
 	// Sliding expiration
 	s.mu.Lock()
-	session.ExpiresAt = time.Now().Add(24 * time.Hour)
+	session.ExpiresAt = time.Now().Add(sessionTTL)
 	s.mu.Unlock()
+	s.persistExpiry(token, session.ExpiresAt)
 	return session, true
 }
 
@@ -158,16 +323,32 @@ func (s *SessionStore) Delete(token string) {
 	s.mu.Lock()
 	delete(s.sessions, token)
 	s.mu.Unlock()
+	s.deleteRow(token)
+}
+
+func (s *SessionStore) deleteRow(token string) {
+	if s.db == nil {
+		return
+	}
+	if _, err := s.db.Exec(`DELETE FROM sessions WHERE token = ?`, token); err != nil {
+		log.Printf("Warning: cannot delete session %s… from database: %v", token[:12], err)
+	}
 }
 
 func (s *SessionStore) Cleanup() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := time.Now()
 	for token, session := range s.sessions {
 		if now.After(session.ExpiresAt) {
 			delete(s.sessions, token)
 		}
+	}
+	s.mu.Unlock()
+	if s.db == nil {
+		return
+	}
+	if _, err := s.db.Exec(`DELETE FROM sessions WHERE expires_at <= ?`, now.Unix()); err != nil {
+		log.Printf("Warning: cannot purge expired sessions: %v", err)
 	}
 }
 
@@ -184,6 +365,7 @@ func generateToken() string {
 type Server struct {
 	config    Config
 	session   *SessionStore
+	accounts  *AccountStore
 	stats     *StatsStore
 	transport http.RoundTripper // optional instrumented transport for the reverse proxy
 }
@@ -191,9 +373,13 @@ type Server struct {
 func NewServer(cfg Config) *Server {
 	s := &Server{
 		config:  cfg,
-		session: NewSessionStore(),
 		stats:   NewStatsStore(cfg.StatsFile),
 	}
+	// Sessions and accounts share one SQLite handle (both nil when running
+	// in-memory); the account store migrates env-configured users into
+	// accounts so existing users keep working.
+	s.session = NewSessionStore(cfg.SessionDBFile)
+	s.accounts = NewAccountStore(s.session.db, cfg.Users, cfg.ServerURL)
 	// Restore persisted stats on startup when a stats file is configured.
 	// On any file error we log a warning and continue with in-memory only.
 	if cfg.StatsFile != "" {
@@ -219,6 +405,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case path == "/api/auth/config":
 		s.configHandler(w, r)
+
+	case path == "/api/auth/account":
+		s.authMiddleware(http.HandlerFunc(s.accountHandler)).ServeHTTP(w, r)
 
 	case path == "/api/trmnl/stats":
 		// Public Trmnl e-ink polling endpoint. Registered before the /api/
@@ -326,12 +515,12 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either email/password or userName, not both"})
 		return
 	}
-	if hasAPIKey && hasUserName {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either userName or apiKey, not both"})
+	if hasAPIKey && hasUserName && !hasPassword {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either userName or apiKey, not both (or add a password to create an account)"})
 		return
 	}
-	if hasPassword && !hasEmail {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password requires email"})
+	if hasPassword && !hasEmail && !hasUserName {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password requires email or userName"})
 		return
 	}
 	if hasEmail && !hasPassword {
@@ -339,19 +528,33 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1) Env user by name → API-key session
+	// 0) Create/claim a local account: userName + password + API key
+	//    → API-key session. New names are created; migrated env users can only
+	//    be claimed with the API key bound to their account.
+	if hasUserName && hasPassword && hasAPIKey {
+		s.loginWithAccountCreate(w, req.UserName, req.Password, req.APIKey, req.ServerURL)
+		return
+	}
+
+	// 1) Local account by name + password → API-key session
+	if hasUserName && hasPassword {
+		s.loginWithAccount(w, req.UserName, req.Password, req.ServerURL)
+		return
+	}
+
+	// 2) Env user by name → API-key session
 	if hasUserName {
 		s.loginWithEnvUser(w, req.UserName)
 		return
 	}
 
-	// 2) Manual API key → API-key session
+	// 3) Manual API key → API-key session
 	if hasAPIKey {
 		s.loginWithAPIKey(w, req.APIKey, req.ServerURL)
 		return
 	}
 
-	// 3) Immich email/password → access-token session
+	// 4) Immich email/password → access-token session
 	if hasEmail {
 		s.loginWithCredentials(w, req.Email, req.Password, req.ServerURL)
 		return
@@ -360,7 +563,125 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide userName, apiKey, or email/password"})
 }
 
+// loginWithAccount authenticates against the local accounts table: the
+// userName/password pair must match an existing account. Migrated env users
+// can only be claimed once a password was set (Settings → Account password);
+// until then auto-login via userName alone keeps working. Never logs the
+// password.
+func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, serverURL string) {
+	if serverURL == "" {
+		serverURL = s.config.ServerURL
+	}
+	if serverURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no server URL configured"})
+		return
+	}
+
+	account, ok := s.accounts.VerifyPassword(serverURL, userName, password)
+	if !ok {
+		if _, exists := s.accounts.Get(serverURL, userName); !exists {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unknown user", "code": "unknown_user"})
+			return
+		}
+		if !s.accounts.HasPassword(serverURL, userName) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no password set for this account", "code": "password_not_set"})
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid password", "code": "invalid_password"})
+		return
+	}
+
+	valid, name, err := s.validateAPIKey(serverURL, account.APIKey)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
+		return
+	}
+	if !valid {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key"})
+		return
+	}
+	if name != "" {
+		account.UserName = name
+	}
+
+	token := s.session.CreateAPIKey(account.UserName, account.APIKey, serverURL)
+	log.Printf("Login: mode=apiKey user=%q session=%s…", account.UserName, token[:12])
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token":     token,
+		"userName":  account.UserName,
+		"serverUrl": serverURL,
+		"mode":      "apiKey",
+	})
+}
+
+// loginWithAccountCreate creates or claims a local account in one step from
+// the login page: userName + password + Immich API key. Claim rules:
+//   - the name already has a password   → reject (password changes live in Settings)
+//   - the name exists without password  → only the API key bound to the account
+//     (e.g. a migrated env user) may claim it; a foreign key is rejected
+//   - the name is new                    → the API key is validated against Immich
+//
+// Never logs the password or the API key.
+func (s *Server) loginWithAccountCreate(w http.ResponseWriter, userName, password, apiKey, serverURL string) {
+	if len(password) < 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters", "code": "weak_password"})
+		return
+	}
+	if serverURL == "" {
+		serverURL = s.config.ServerURL
+	}
+	if serverURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no server URL configured"})
+		return
+	}
+
+	if account, exists := s.accounts.Get(serverURL, userName); exists {
+		if account.PasswordHash != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "this user name already has a password; sign in with it or change it in Settings",
+				"code":  "account_exists",
+			})
+			return
+		}
+		if account.APIKey != apiKey {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"error": "this user name is reserved for another API key",
+				"code":  "invalid_api_key",
+			})
+			return
+		}
+		// Migrated env user claiming their own account with the bound key.
+	} else {
+		valid, _, err := s.validateAPIKey(serverURL, apiKey)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
+			return
+		}
+		if !valid {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key", "code": "invalid_api_key"})
+			return
+		}
+	}
+
+	s.accounts.SetPassword(serverURL, userName, apiKey, password)
+	token := s.session.CreateAPIKey(userName, apiKey, serverURL)
+	log.Printf("Login: mode=apiKey (account created/claimed) user=%q session=%s…", userName, token[:12])
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token":     token,
+		"userName":  userName,
+		"serverUrl": serverURL,
+		"mode":      "apiKey",
+	})
+}
+
 func (s *Server) loginWithEnvUser(w http.ResponseWriter, userName string) {
+	// A person who has set an account password must use it: the unauthenticated
+	// userName auto-login is disabled for that account.
+	if s.config.ServerURL != "" && s.accounts.HasPassword(s.config.ServerURL, userName) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "password required", "code": "password_required"})
+		return
+	}
+
 	var apiKey string
 	found := false
 	for _, u := range s.config.Users {
@@ -399,6 +720,7 @@ func (s *Server) loginWithEnvUser(w http.ResponseWriter, userName string) {
 		"token":     token,
 		"userName":  userName,
 		"serverUrl": serverURL,
+		"mode":      "apiKey",
 	})
 }
 
@@ -432,6 +754,7 @@ func (s *Server) loginWithAPIKey(w http.ResponseWriter, apiKey, serverURL string
 		"token":     token,
 		"userName":  userName,
 		"serverUrl": serverURL,
+		"mode":      "apiKey",
 	})
 }
 
@@ -478,7 +801,64 @@ func (s *Server) loginWithCredentials(w http.ResponseWriter, email, password, se
 		"token":     token,
 		"userName":  userName,
 		"serverUrl": serverURL,
+		"mode":      "accessToken",
 	})
+}
+
+// accountHandler lets an authenticated person set or change the password for
+// their local account, binding their session's Immich API key to it. Only
+// API-key sessions can do this: access tokens are ephemeral and cannot be
+// re-validated on later account logins.
+func (s *Server) accountHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	session := sessionFromContext(r.Context())
+	if session == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no session"})
+		return
+	}
+	if session.Mode != AuthModeAPIKey {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "password accounts are only available for API-key sessions; log in with an Immich API key first",
+			"code":  "unsupported_mode",
+		})
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot read request body"})
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		Password        string `json:"password"`
+		CurrentPassword string `json:"currentPassword"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if len(req.Password) < 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters", "code": "weak_password"})
+		return
+	}
+
+	// Changing an existing password requires the current one.
+	if s.accounts.HasPassword(session.ServerURL, session.UserName) {
+		if _, ok := s.accounts.VerifyPassword(session.ServerURL, session.UserName, req.CurrentPassword); !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password required", "code": "current_password_required"})
+			return
+		}
+	}
+
+	s.accounts.SetPassword(session.ServerURL, session.UserName, session.APIKey, req.Password)
+	log.Printf("Account: password set for user=%q server=%q", session.UserName, session.ServerURL)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 type immichLoginResponse struct {
@@ -952,6 +1332,11 @@ func main() {
 			log.Printf("  Trmnl stats persistence: %s", cfg.StatsFile)
 		} else {
 			log.Printf("  Trmnl stats: in-memory only (no TRMNL_STATS_FILE)")
+		}
+		if cfg.SessionDBFile != "" {
+			log.Printf("  Session persistence: %s", cfg.SessionDBFile)
+		} else {
+			log.Printf("  Sessions: in-memory only (no IMMICH_SESSIONS_DB; sessions lost on restart)")
 		}
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)

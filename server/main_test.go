@@ -277,7 +277,7 @@ func TestLogoutHandler_SucceedsWithoutAuth(t *testing.T) {
 }
 
 func TestSessionStore_CreateAccessToken(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore("")
 	token := store.CreateAccessToken("Alice", "jwt-token", "http://immich", "alice@test.com", "uid-1")
 	s, ok := store.Get(token)
 	if !ok {
@@ -444,7 +444,7 @@ func TestLoginHandler_EnvUserUnknown(t *testing.T) {
 }
 
 func TestSessionStore_GetDeleteCleanup(t *testing.T) {
-	store := NewSessionStore()
+	store := NewSessionStore("")
 	token := store.CreateAPIKey("u", "k", "http://s")
 	s1, ok := store.Get(token)
 	if !ok {

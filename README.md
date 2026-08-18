@@ -84,11 +84,24 @@ IMMICH_API_KEY_1_KEY=your-api-key-here
 ```
 
 Behavior:
-- 1 user configured: auto-login
-- >1 users configured: user selection screen (`/select-user`)
-- no API keys configured: login screen (`/login`) with Immich account or API key
+- No active session: the **login screen** (`/login`) is always shown — there is no auto-login. Configured users appear there as one-click options.
+- Login screen options: pick a configured user, or sign in with a **Swipe account** (user name + password), an **Immich account** (email/password), an **API key**, or **Create account** (set a user name + password + API key in one step).
 
 Env API keys are optional. Households can skip them and use Immich email/password login instead.
+
+### Local Swipe accounts (optional)
+
+Every person can give their own account a password once logged in: **Settings → Account password**. The password is stored PBKDF2-hashed in the sessions database (`IMMICH_SESSIONS_DB`) and is never sent to Immich.
+
+- Env-configured users are **migrated into local accounts automatically** at startup — existing API keys keep working, nothing to reconfigure.
+- Until a password is set, a configured user is signed in with a single click on the login page (using their env API key server-side).
+- Once a password is set, that account is signed in with **user name + password** on the login page.
+- **Create account** on the login page sets a first password for a new (or migrated, still password-less) user name, binding an Immich API key to it. A migrated user name can only be claimed with the exact API key it is bound to.
+- A local account login uses the account's Immich API key server-side, exactly like an env-key login — the browser never sees it.
+
+Optional runtime variables:
+- `TRMNL_STATS_FILE` — path to persist keep/delete counters (see below)
+- `IMMICH_SESSIONS_DB` — path to a SQLite file that persists login sessions across restarts (see [Session persistence](#session-persistence))
 
 ### Option D: Trmnl e-ink display (keep/delete stats)
 
@@ -139,13 +152,20 @@ services:
 
 On `/login` you can choose:
 
-1. **Immich account** (email + password + server URL)  
+0. **Configured user** (one click)  
+   - Logs in with that user's env API key server-side; if the account has a password, the Swipe account form is shown pre-filled
+1. **Swipe account** (user name + password + server URL)  
+   - Authenticates against the local accounts table (Settings → Account password)  
+   - Uses the account's Immich API key server-side — no Immich login round-trip
+2. **Immich account** (email + password + server URL)  
    - The Go backend calls Immich password login and stores the Immich access token server-side  
    - Requires password login enabled on Immich (`passwordLogin.enabled`)  
    - Multiple people can each sign in with their own Immich account on the same deployment
-
-2. **API key** (server URL + API key)  
+3. **API key** (server URL + API key)  
    - Same as before; useful for private/single-user setups or when password login is disabled
+4. **Create account** (user name + password + API key + server URL)  
+   - Validates the API key against Immich and creates a local Swipe account in one step
+   - A user name that already has a password cannot be re-created (`account_exists`); a migrated env user can only be claimed with the exact API key it is bound to
 
 Only opaque Swipe session tokens are kept in the browser — Immich passwords and access tokens never leave the backend.
 
@@ -155,13 +175,35 @@ Multiple people can be **logged in at the same time on one device/browser**. Eve
 
 - **Add a person**: open the header switcher → **Add person** → sign in via `/login` while the existing sessions stay logged in.
 - **Sign out**: open the header switcher → **Sign out** next to a person — only that person is removed; if others remain, the app switches to the next one.
-- **Expired sessions**: a dead session (401) is removed automatically and the app falls back to the next logged-in person; when none remain you are sent to the login/selection screen.
+- **Expired sessions**: a dead session (401) is removed automatically and the app falls back to the next logged-in person; when none remain you are sent to the login screen.
 - Sessions survive page reloads; the last active person is restored on the next visit.
 - Legacy single-session data (`immich-swipe-session` in `sessionStorage`) is migrated automatically on first load.
 
 Security note: keeping sessions in `localStorage` (instead of tab-scoped `sessionStorage`) is what allows instant switching after reloads; it means a successful XSS could read session tokens. Swipe session tokens are opaque, not Immich secrets, and expire server-side after 24h.
 
-From the multi-user picker (`/select-user`), use **Sign in with Immich account** for people who are not listed in env keys.
+### Session persistence
+
+Swipe sessions live **in the server's memory by default** and are lost when the server restarts — everyone then has to log in again. To keep all logged-in people signed in across server restarts, point `IMMICH_SESSIONS_DB` at a SQLite file:
+
+```bash
+IMMICH_SESSIONS_DB=/data/immich-swipe.db
+```
+
+With Docker Compose, bind-mount a directory and point the variable into it:
+
+```yaml
+services:
+  immich-swipe:
+    volumes:
+      - ./data:/data
+    environment:
+      - IMMICH_SESSIONS_DB=/data/immich-swipe.db
+```
+
+The backend writes every session (token + Immich API key or access token) through to the database and restores non-expired sessions on startup; the 24h sliding expiry and logouts are persisted too.
+
+> **Security note:** the database file contains Immich credentials in plain text (API keys / access tokens) and PBKDF2-hashed local account passwords. Treat it like a secrets file — keep it inside the container volume with restricted permissions and never commit it. The browser still only ever holds opaque Swipe session tokens.
+
 
 ### Option C: SPA-only mode
 

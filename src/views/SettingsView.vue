@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { useAuthStore } from '@/stores/auth'
 import { useObservabilityStore } from '@/stores/observability'
 import { useUiStore } from '@/stores/ui'
 import { validateObservabilitySettings, type ObservabilitySettings } from '@/types/observability'
@@ -8,6 +9,7 @@ import { initOtel } from '@/composables/useOtel'
 
 const store = useObservabilityStore()
 const uiStore = useUiStore()
+const authStore = useAuthStore()
 
 // Local editable copy — only persisted on Save, so invalid input never
 // overwrites the active (persisted) configuration.
@@ -19,6 +21,44 @@ const draft = reactive<ObservabilitySettings>({
 const errors = computed(() => validateObservabilitySettings(draft))
 const umami = umamiStatus()
 const saved = ref(false)
+
+// ── Local account password ────────────────────────────────────────────────
+// Only API-key sessions can carry an Immich API key that the account can be
+// bound to, so access-token sessions (Immich password login) cannot set one.
+const accountAvailable = computed(
+  () => authStore.isLoggedIn && authStore.activeSessionMode !== 'accessToken'
+)
+const currentPassword = ref('')
+const newPassword = ref('')
+const confirmPassword = ref('')
+const accountError = ref('')
+const accountSaving = ref(false)
+const accountSaved = ref(false)
+
+async function saveAccountPassword() {
+  accountError.value = ''
+  if (newPassword.value.length < 8) {
+    accountError.value = 'Password must be at least 8 characters'
+    return
+  }
+  if (newPassword.value !== confirmPassword.value) {
+    accountError.value = 'Passwords do not match'
+    return
+  }
+  accountSaving.value = true
+  const result = await authStore.setAccountPassword(currentPassword.value, newPassword.value)
+  accountSaving.value = false
+  if (result.ok) {
+    accountSaved.value = true
+    currentPassword.value = ''
+    newPassword.value = ''
+    confirmPassword.value = ''
+    uiStore.toast('Account password saved', 'success', 1500)
+    setTimeout(() => (accountSaved.value = false), 2000)
+  } else {
+    accountError.value = result.error
+  }
+}
 
 // Keep draft in sync when the active settings change (e.g. re-login as
 // another user, or initial load that happened after first render).
@@ -54,6 +94,96 @@ onBeforeUnmount(() => {
     <h1 class="text-2xl font-bold mb-1" :class="uiStore.isDarkMode ? 'text-white' : 'text-gray-900'">
       Settings
     </h1>
+
+    <!-- Local account -->
+    <section
+      v-if="accountAvailable"
+      class="rounded-2xl shadow-lg border p-5 mb-6"
+      :class="uiStore.isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'"
+    >
+      <h2 class="font-semibold" :class="uiStore.isDarkMode ? 'text-white' : 'text-gray-900'">
+        Account password
+      </h2>
+      <p class="text-xs mt-0.5 mb-4" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-500'">
+        Set a password for <span class="font-medium">{{ authStore.currentUserName }}</span> on
+        {{ authStore.immichServerUrl }}. Once set, logging in with this user name requires the
+        password (instead of the env-configured one-click login).
+      </p>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm mb-1" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-700'">
+            Current password
+          </label>
+          <input
+            v-model="currentPassword"
+            type="password"
+            data-testid="account-current-password"
+            autocomplete="current-password"
+            placeholder="Only needed when changing an existing password"
+            class="w-full px-3 py-2 rounded-lg border text-sm"
+            :class="uiStore.isDarkMode
+              ? 'bg-gray-800 border-gray-700 text-white'
+              : 'bg-gray-50 border-gray-300 text-gray-900'"
+          />
+        </div>
+        <div>
+          <label class="block text-sm mb-1" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-700'">
+            New password
+          </label>
+          <input
+            v-model="newPassword"
+            type="password"
+            data-testid="account-new-password"
+            autocomplete="new-password"
+            placeholder="At least 8 characters"
+            class="w-full px-3 py-2 rounded-lg border text-sm"
+            :class="uiStore.isDarkMode
+              ? 'bg-gray-800 border-gray-700 text-white'
+              : 'bg-gray-50 border-gray-300 text-gray-900'"
+          />
+        </div>
+        <div>
+          <label class="block text-sm mb-1" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-700'">
+            Confirm new password
+          </label>
+          <input
+            v-model="confirmPassword"
+            type="password"
+            data-testid="account-confirm-password"
+            autocomplete="new-password"
+            placeholder="Repeat the new password"
+            class="w-full px-3 py-2 rounded-lg border text-sm"
+            :class="uiStore.isDarkMode
+              ? 'bg-gray-800 border-gray-700 text-white'
+              : 'bg-gray-50 border-gray-300 text-gray-900'"
+          />
+        </div>
+      </div>
+
+      <p v-if="accountError" class="text-xs text-red-500 mt-3" data-testid="account-error">
+        {{ accountError }}
+      </p>
+
+      <div class="flex items-center gap-3 mt-4">
+        <button
+          type="button"
+          data-testid="account-save-btn"
+          @click="saveAccountPassword"
+          :disabled="accountSaving"
+          class="px-4 py-2 rounded-full text-sm font-medium border transition-colors disabled:opacity-40"
+          :class="uiStore.isDarkMode
+            ? 'bg-indigo-600 hover:bg-indigo-500 border-indigo-500 text-white'
+            : 'bg-indigo-600 hover:bg-indigo-500 border-indigo-500 text-white'"
+        >
+          {{ accountSaving ? 'Saving…' : 'Save password' }}
+        </button>
+        <span v-if="accountSaved" class="text-sm" :class="uiStore.isDarkMode ? 'text-green-400' : 'text-green-600'">
+          Saved ✓
+        </span>
+      </div>
+    </section>
+
     <p class="text-sm mb-6" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-500'">
       Analytics and tracing are optional. Nothing is sent anywhere until you enable them here.
     </p>
