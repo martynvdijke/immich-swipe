@@ -1,3 +1,17 @@
+# [1.8.0](https://github.com/martynvdijke/immich-swipe/compare/v1.7.3...v1.8.0) (2026-08-18)
+
+
+### Bug Fixes
+
+* use @typescript/typescript6 alias for vue-tsc compatibility ([e07148f](https://github.com/martynvdijke/immich-swipe/commit/e07148f84bbaff57cc8beda4ef8fa2124caf9250))
+
+
+### Features
+
+* local swipe accounts with password login and env-user migration ([39b9b42](https://github.com/martynvdijke/immich-swipe/commit/39b9b42dd70b28169e78f3ddb8f9e6ce0176f0d3))
+* login page with user picker and create-account flow ([a16b526](https://github.com/martynvdijke/immich-swipe/commit/a16b526094ce710d03b7b3f151ea6b2588656bae))
+* persist server-side sessions in SQLite across restarts ([bf07b8a](https://github.com/martynvdijke/immich-swipe/commit/bf07b8ab85dc9d2c0b6696089907a44421a7c367))
+
 ## [1.7.3](https://github.com/martynvdijke/immich-swipe/compare/v1.7.2...v1.7.3) (2026-08-15)
 
 ## [1.7.2](https://github.com/martynvdijke/immich-swipe/compare/v1.7.1...v1.7.2) (2026-08-14)
