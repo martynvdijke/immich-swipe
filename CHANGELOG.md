@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/martynvdijke/immich-swipe/compare/v1.8.3...v1.9.0) (2026-08-22)
+
+
+### Features
+
+* skip action, detail overlay, keyboard shortcuts, duplicates and location/camera scopes ([0d93ab3](https://github.com/martynvdijke/immich-swipe/commit/0d93ab376d77e9179fadfb6c95ecf49f697a68f3))
+
 ## [1.8.3](https://github.com/martynvdijke/immich-swipe/compare/v1.8.2...v1.8.3) (2026-08-21)
 
 ## [1.8.2](https://github.com/martynvdijke/immich-swipe/compare/v1.8.1...v1.8.2) (2026-08-20)
