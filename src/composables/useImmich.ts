@@ -43,6 +43,14 @@ export function useImmich() {
   const scopedRandomPage = ref<number>(1)
   const scopedRandomHasMore = ref(true)
 
+  // Duplicates scope: /search/duplicates is unpaginated, so the filtered set
+  // is fetched once per scope activation, grouped by duplicateId (members of
+  // a group stay adjacent), and served from a client-side queue.
+  const duplicatesAll = ref<ImmichAsset[]>([])
+  const duplicatesQueue = ref<ImmichAsset[]>([])
+  const duplicatesLoaded = ref(false)
+  let duplicatesLoadPromise: Promise<void> | null = null
+
   // Review-progress: total reviewable assets in the active feed (from
   // /search/metadata `assets.total`), and a counter that re-fetches the total
   // periodically as the user reviews.
@@ -52,7 +60,7 @@ export function useImmich() {
 
   type ReviewAction = {
     asset: ImmichAsset
-    type: 'keep' | 'delete' | 'keepToAlbum'
+    type: 'keep' | 'delete' | 'keepToAlbum' | 'skip'
     albumName?: string
   }
 
@@ -70,6 +78,10 @@ export function useImmich() {
     chronologicalHasMore.value = true
     scopedRandomPage.value = 1
     scopedRandomHasMore.value = true
+    duplicatesAll.value = []
+    duplicatesQueue.value = []
+    duplicatesLoaded.value = false
+    duplicatesLoadPromise = null
     nextAsset.value = null
     pendingAssets.value = []
     actionHistory.value = []
@@ -202,6 +214,18 @@ export function useImmich() {
       filters.takenBefore = scope.to
     } else if (scope.kind === 'favorites') {
       filters.isFavorite = true
+    } else if (scope.kind === 'location') {
+      const country = scope.country?.trim()
+      const city = scope.city?.trim()
+      const state = scope.state?.trim()
+      if (country) filters.country = country
+      if (city) filters.city = city
+      if (state) filters.state = state
+    } else if (scope.kind === 'camera') {
+      const make = scope.make?.trim()
+      const model = scope.model?.trim()
+      if (make) filters.make = make
+      if (model) filters.model = model
     }
     const personId = preferencesStore.selectedPersonId
     if (personId) {
@@ -264,11 +288,65 @@ export function useImmich() {
     return null
   }
 
+  // Duplicates feed: fetch once, filter reviewable + grouped assets, order
+  // groups by their oldest member so sessions are deterministic. Assets
+  // without a duplicateId are noise and dropped.
+  function duplicatesGroupTime(group: ImmichAsset[]): number {
+    const raw = group[0]?.localDateTime
+    const parsed = raw ? Date.parse(raw) : NaN
+    return Number.isNaN(parsed) ? Number.MAX_SAFE_INTEGER : parsed
+  }
+
+  async function ensureDuplicatesLoaded(): Promise<void> {
+    if (duplicatesLoaded.value) return
+    if (duplicatesLoadPromise) return duplicatesLoadPromise
+    duplicatesLoadPromise = (async () => {
+      const assets = await apiRequest<ImmichAsset[]>('/search/duplicates')
+      const usable = (assets ?? []).filter((asset) => asset.duplicateId && isReviewable(asset))
+      const groups = new Map<string, ImmichAsset[]>()
+      for (const asset of usable) {
+        const key = asset.duplicateId as string
+        const group = groups.get(key)
+        if (group) group.push(asset)
+        else groups.set(key, [asset])
+      }
+      const ordered = Array.from(groups.values())
+        .sort((g1, g2) => duplicatesGroupTime(g1) - duplicatesGroupTime(g2))
+        .flat()
+      duplicatesAll.value = ordered
+      duplicatesQueue.value = [...ordered]
+      duplicatesLoaded.value = true
+    })().finally(() => {
+      duplicatesLoadPromise = null
+    })
+    return duplicatesLoadPromise
+  }
+
+  async function fetchNextDuplicatesAsset(): Promise<ImmichAsset | null> {
+    await ensureDuplicatesLoaded()
+    while (duplicatesQueue.value.length > 0) {
+      const candidate = duplicatesQueue.value.shift()
+      // Re-check at serve time: undo may have unmarked assets mid-session.
+      if (candidate && !reviewedStore.isReviewed(candidate.id)) return candidate
+    }
+    return null
+  }
+
   // Fetch the total number of reviewable assets in the active feed. The
   // `total` from /search/metadata reflects the current filters (scope, person,
   // skip-videos, order), so it matches what the user is actually reviewing.
   async function fetchReviewTotal(): Promise<void> {
     try {
+      // Duplicates scope: the endpoint is unpaginated, so the total is the
+      // number of not-yet-reviewed assets in the fetched duplicate set.
+      if (preferencesStore.scope.kind === 'duplicates') {
+        await ensureDuplicatesLoaded()
+        reviewTotal.value = duplicatesAll.value.filter(
+          (asset) => !reviewedStore.isReviewed(asset.id)
+        ).length
+        return
+      }
+
       const body: MetadataSearchRequest = {
         size: 1,
         ...buildSearchFilters(),
@@ -302,7 +380,7 @@ export function useImmich() {
   // All no-ops when the respective integration is disabled, so review
   // behavior is unchanged when observability is off.
   function trackObservabilityAction(
-    action: 'keep' | 'delete' | 'undo' | 'album_added',
+    action: 'keep' | 'delete' | 'undo' | 'album_added' | 'skip',
     opts: { actionType?: string; albumName?: string } = {}
   ): void {
     const asset = currentAsset.value
@@ -314,6 +392,7 @@ export function useImmich() {
       action === 'keep' ? 'swipe.keep'
       : action === 'delete' ? 'swipe.delete'
       : action === 'undo' ? 'swipe.undo'
+      : action === 'skip' ? 'swipe.skip'
       : 'swipe.album_add'
     trackEvent(umamiEvent, {
       assetId: asset?.id,
@@ -327,6 +406,7 @@ export function useImmich() {
       action === 'keep' ? 'kept'
       : action === 'delete' ? 'deleted'
       : action === 'undo' ? 'undo'
+      : action === 'skip' ? 'skipped'
       : 'album_added'
     recordSwipeAction(counterName, { assetType, personFiltered, albumName: opts.albumName })
     traceReviewAction(opts.actionType ?? action, { assetType, personFiltered, albumName: opts.albumName })
@@ -371,6 +451,9 @@ export function useImmich() {
       if (pending && !reviewedStore.isReviewed(pending.id)) {
         return pending
       }
+    }
+    if (preferencesStore.scope.kind === 'duplicates') {
+      return fetchNextDuplicatesAsset()
     }
     if (preferencesStore.reviewOrder !== 'random') {
       return fetchNextChronologicalAsset()
@@ -635,6 +718,18 @@ export function useImmich() {
     }
   }
 
+  // Skip: mark reviewed without any Immich write (stats-neutral, local-only)
+  function skipPhoto(): void {
+    if (!currentAsset.value) return
+    const assetToSkip = currentAsset.value
+    actionHistory.value.push({ asset: assetToSkip, type: 'skip' })
+    reviewedStore.markReviewed(assetToSkip.id, 'skip')
+    trackReviewAction()
+    trackObservabilityAction('skip')
+    uiStore.toast("Skipped — won't show again", 'info', 1500)
+    moveToNextAsset()
+  }
+
   // Delete
   async function deletePhoto(): Promise<void> {
     if (!currentAsset.value) return
@@ -686,6 +781,17 @@ export function useImmich() {
       return
     }
 
+    // Skip undo is purely local: no server call, no counter change.
+    if (lastAction.type === 'skip') {
+      reviewedStore.unmarkReviewed(lastAction.asset.id)
+      uiStore.toast('Back to previous photo', 'info', 1500)
+      if (preloadedAfterResume?.id !== assetToResumeAfterUndo?.id) {
+        enqueuePendingAsset(preloadedAfterResume)
+      }
+      setCurrentAssetWithFallback(lastAction.asset, assetToResumeAfterUndo)
+      return
+    }
+
     reviewedStore.unmarkReviewed(lastAction.asset.id)
     uiStore.decrementKept()
     if (lastAction.type === 'keepToAlbum' && lastAction.albumName) {
@@ -712,6 +818,7 @@ export function useImmich() {
     keepPhotoToAlbum,
     toggleFavorite,
     deletePhoto,
+    skipPhoto,
     undoLastAction,
     canUndo,
     getAssetThumbnailUrl,

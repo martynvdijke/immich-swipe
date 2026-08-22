@@ -208,7 +208,7 @@ function getCounter(action: string): import('@opentelemetry/api').Counter | null
  * Record a swipe action counter (`swipe.kept`, `swipe.deleted`, ...).
  * No-op while OTel is inactive.
  */
-export function recordSwipeAction(action: 'kept' | 'deleted' | 'undo' | 'album_added', attrs?: SwipeActionAttrs): void {
+export function recordSwipeAction(action: 'kept' | 'deleted' | 'skipped' | 'undo' | 'album_added', attrs?: SwipeActionAttrs): void {
   const counter = getCounter(action)
   if (!counter) return
   const attributes: import('@opentelemetry/api').Attributes = {}

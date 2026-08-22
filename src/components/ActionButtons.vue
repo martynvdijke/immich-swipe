@@ -12,6 +12,7 @@ defineProps<{
 const emit = defineEmits<{
   keep: []
   delete: []
+  skip: []
   undo: []
   toggleFavorite: []
   openAlbumPicker: []
@@ -32,7 +33,7 @@ function handleAlbumDrop(e: DragEvent) {
       @dragover.prevent
       @dragenter.prevent
       @drop="handleAlbumDrop"
-      class="w-16 h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
+      class="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
       :class="[
         uiStore.isDarkMode
           ? ['bg-gray-800 hover:bg-blue-600 text-white', isAlbumDragActive ? 'ring-4 ring-blue-500' : '']
@@ -41,7 +42,7 @@ function handleAlbumDrop(e: DragEvent) {
       aria-label="Add to album"
       title="Add to album"
     >
-      <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="w-6 h-6 sm:w-7 sm:h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h10M16 18h4M8 6v12" />
       </svg>
     </button>
@@ -49,7 +50,7 @@ function handleAlbumDrop(e: DragEvent) {
     <!-- Delete -->
     <button
       @click="emit('delete')"
-      class="w-16 h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
+      class="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
       :class="[
         uiStore.isDarkMode
           ? 'bg-gray-800 hover:bg-red-600 text-white'
@@ -57,7 +58,7 @@ function handleAlbumDrop(e: DragEvent) {
       ]"
       aria-label="Delete photo"
     >
-      <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="w-6 h-6 sm:w-8 sm:h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
       </svg>
     </button>
@@ -65,7 +66,7 @@ function handleAlbumDrop(e: DragEvent) {
     <!-- Favorite -->
     <button
       @click="emit('toggleFavorite')"
-      class="w-16 h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
+      class="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
       :class="[
         uiStore.isDarkMode
           ? (isFavorite
@@ -80,7 +81,7 @@ function handleAlbumDrop(e: DragEvent) {
       :title="isFavorite ? 'Remove from favorites' : 'Add to favorites'"
     >
       <svg
-        class="w-7 h-7"
+        class="w-6 h-6 sm:w-7 sm:h-7"
         :class="isFavorite ? 'fill-current' : 'fill-none'"
         stroke="currentColor"
         viewBox="0 0 24 24"
@@ -94,10 +95,27 @@ function handleAlbumDrop(e: DragEvent) {
       </svg>
     </button>
 
+    <!-- Skip -->
+    <button
+      @click="emit('skip')"
+      class="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
+      :class="[
+        uiStore.isDarkMode
+          ? 'bg-gray-800 hover:bg-gray-600 text-white'
+          : 'bg-white hover:bg-gray-500 hover:text-white text-gray-500 border border-gray-200'
+      ]"
+      aria-label="Skip photo"
+      title="Skip (won't show again)"
+    >
+      <svg class="w-6 h-6 sm:w-8 sm:h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 4l10 8-10 8V4zM19 5v14" />
+      </svg>
+    </button>
+
     <!-- Keep -->
     <button
       @click="emit('keep')"
-      class="w-16 h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
+      class="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-90 shadow-lg"
       :class="[
         uiStore.isDarkMode
           ? 'bg-gray-800 hover:bg-green-600 text-white'
@@ -105,7 +123,7 @@ function handleAlbumDrop(e: DragEvent) {
       ]"
       aria-label="Keep photo"
     >
-      <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="w-6 h-6 sm:w-8 sm:h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
       </svg>
     </button>
@@ -123,7 +141,7 @@ function handleAlbumDrop(e: DragEvent) {
       aria-label="Undo last action"
       :title="canUndo ? 'Undo last action' : 'Nothing to undo'"
     >
-      <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="w-6 h-6 sm:w-8 sm:h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a5 5 0 015 5v2M3 10l6 6M3 10l6-6" />
       </svg>
     </button>

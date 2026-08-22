@@ -14,6 +14,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   keep: []
   delete: []
+  /** Tap/click (not a swipe) on the media: open the full-resolution detail view. */
+  inspect: []
 }>()
 
 const uiStore = useUiStore()
@@ -115,6 +117,27 @@ function openInImmich() {
   const opened = window.open(url, '_blank', 'noopener')
   if (!opened) {
     window.location.assign(url)
+  }
+}
+
+// Tap/click detection that excludes drags: only a short press with minimal
+// movement opens the detail overlay. Videos are excluded — their surface is
+// owned by the native player controls.
+let pressStart: { x: number; y: number; t: number } | null = null
+
+function onMediaPointerDown(e: PointerEvent) {
+  if (isVideo.value || !e.isPrimary) return
+  pressStart = { x: e.clientX, y: e.clientY, t: Date.now() }
+}
+
+function onMediaPointerUp(e: PointerEvent) {
+  if (!pressStart || !e.isPrimary) return
+  const dx = e.clientX - pressStart.x
+  const dy = e.clientY - pressStart.y
+  const dt = Date.now() - pressStart.t
+  pressStart = null
+  if (Math.hypot(dx, dy) < 10 && dt < 300) {
+    emit('inspect')
   }
 }
 
@@ -261,6 +284,11 @@ onBeforeUnmount(() => {
   cleanupAllMedia()
 })
 
+// Let the parent reuse the already-downloaded video stream (detail overlay).
+defineExpose({
+  videoBlobUrl,
+})
+
 // obvious things are obvious
 const formattedDate = computed(() => {
   const date = new Date(props.asset.localDateTime || props.asset.fileCreatedAt)
@@ -328,8 +356,11 @@ const personBadgeLabel = computed(() => {
         v-if="!isVideo && imageBlobUrl"
         :src="imageBlobUrl"
         :alt="asset.originalFileName"
-        class="w-full h-full object-contain"
+        class="w-full h-full object-contain cursor-zoom-in"
         draggable="false"
+        @pointerdown="onMediaPointerDown"
+        @pointerup="onMediaPointerUp"
+        @pointercancel="onMediaPointerUp"
       />
 
       <!-- Actual video -->

@@ -2,21 +2,23 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 
-type ReviewDecision = 'keep' | 'delete'
+type ReviewDecision = 'keep' | 'delete' | 'skip'
 
 interface ReviewedPayload {
-  v: 1
+  v: 2
   kept: string[]
   deleted: string[]
+  skipped?: string[]
 }
 
 const STORAGE_PREFIX = 'immich-swipe-reviewed'
-const STORAGE_VERSION = 1
+const STORAGE_VERSION = 2
 
 export const useReviewedStore = defineStore('reviewed', () => {
   const authStore = useAuthStore()
   const kept = ref<Set<string>>(new Set())
   const deleted = ref<Set<string>>(new Set())
+  const skipped = ref<Set<string>>(new Set())
   const initialized = ref(false)
 
   const storageKey = computed(() => {
@@ -29,6 +31,7 @@ export const useReviewedStore = defineStore('reviewed', () => {
     initialized.value = false
     kept.value = new Set()
     deleted.value = new Set()
+    skipped.value = new Set()
 
     const raw = localStorage.getItem(storageKey.value)
     if (!raw) {
@@ -40,8 +43,11 @@ export const useReviewedStore = defineStore('reviewed', () => {
       const parsed = JSON.parse(raw) as Partial<ReviewedPayload>
       const keptIds = Array.isArray(parsed.kept) ? parsed.kept : []
       const deletedIds = Array.isArray(parsed.deleted) ? parsed.deleted : []
+      // `skipped` was introduced with payload v2; v1 payloads simply have none.
+      const skippedIds = Array.isArray(parsed.skipped) ? parsed.skipped : []
       kept.value = new Set(keptIds.filter((id) => typeof id === 'string'))
       deleted.value = new Set(deletedIds.filter((id) => typeof id === 'string'))
+      skipped.value = new Set(skippedIds.filter((id) => typeof id === 'string'))
     } catch (e) {
       console.error('Failed to parse reviewed cache from localStorage', e)
     } finally {
@@ -55,21 +61,23 @@ export const useReviewedStore = defineStore('reviewed', () => {
       v: STORAGE_VERSION,
       kept: Array.from(kept.value),
       deleted: Array.from(deleted.value),
+      skipped: Array.from(skipped.value),
     }
     localStorage.setItem(storageKey.value, JSON.stringify(payload))
   }
 
   function isReviewed(id: string): boolean {
-    return kept.value.has(id) || deleted.value.has(id)
+    return kept.value.has(id) || deleted.value.has(id) || skipped.value.has(id)
   }
 
-  // Number of assets already reviewed (kept + deleted) in the current
-  // server:user scope. Drives the review-progress indicator.
-  const reviewedCount = computed(() => kept.value.size + deleted.value.size)
+  // Number of assets already reviewed (kept + deleted + skipped) in the
+  // current server:user scope. Drives the review-progress indicator.
+  const reviewedCount = computed(() => kept.value.size + deleted.value.size + skipped.value.size)
 
   function getDecision(id: string): ReviewDecision | null {
     if (kept.value.has(id)) return 'keep'
     if (deleted.value.has(id)) return 'delete'
+    if (skipped.value.has(id)) return 'skip'
     return null
   }
 
@@ -78,9 +86,15 @@ export const useReviewedStore = defineStore('reviewed', () => {
     if (decision === 'keep') {
       kept.value.add(id)
       deleted.value.delete(id)
-    } else {
+      skipped.value.delete(id)
+    } else if (decision === 'delete') {
       deleted.value.add(id)
       kept.value.delete(id)
+      skipped.value.delete(id)
+    } else {
+      skipped.value.add(id)
+      kept.value.delete(id)
+      deleted.value.delete(id)
     }
     persist()
   }
@@ -89,6 +103,7 @@ export const useReviewedStore = defineStore('reviewed', () => {
     if (!id) return
     kept.value.delete(id)
     deleted.value.delete(id)
+    skipped.value.delete(id)
     persist()
   }
 
