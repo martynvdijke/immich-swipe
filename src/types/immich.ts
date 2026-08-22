@@ -62,6 +62,9 @@ export type ReviewScope =
   | { kind: 'album'; albumId: string }
   | { kind: 'dateRange'; from: string; to: string }
   | { kind: 'favorites' }
+  | { kind: 'duplicates' }
+  | { kind: 'location'; country?: string; city?: string; state?: string }
+  | { kind: 'camera'; make?: string; model?: string }
 
 export interface MetadataSearchRequest {
   page?: number
@@ -73,6 +76,11 @@ export interface MetadataSearchRequest {
   takenAfter?: string
   takenBefore?: string
   personIds?: string[]
+  city?: string
+  state?: string
+  country?: string
+  make?: string
+  model?: string
 }
 
 export interface MetadataSearchResponse {

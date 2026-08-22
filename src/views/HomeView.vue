@@ -13,6 +13,7 @@ import ActionButtons from '@/components/ActionButtons.vue'
 import AlbumPicker from '@/components/AlbumPicker.vue'
 import ReviewScopePicker from '@/components/ReviewScopePicker.vue'
 import PersonPicker from '@/components/PersonPicker.vue'
+import AssetDetailOverlay from '@/components/AssetDetailOverlay.vue'
 
 const {
   currentAsset,
@@ -22,6 +23,7 @@ const {
   keepPhotoToAlbum,
   toggleFavorite,
   deletePhoto,
+  skipPhoto,
   undoLastAction,
   fetchAlbums,
   fetchPeople,
@@ -45,6 +47,12 @@ const isLoadingPeople = ref(false)
 const peopleError = ref<string | null>(null)
 const people = ref<ImmichPerson[]>([])
 
+// Full-resolution detail overlay (tap on card / Z key). While open, review
+// actions and hotkeys are suppressed.
+const isDetailOpen = ref(false)
+const swipeCardRef = ref<InstanceType<typeof SwipeCard> | null>(null)
+const currentVideoSrc = computed(() => swipeCardRef.value?.videoBlobUrl ?? null)
+
 const scopeLabel = computed(() => {
   const scope = preferencesStore.scope
   if (scope.kind === 'library') return ''
@@ -52,6 +60,13 @@ const scopeLabel = computed(() => {
     return albums.value.find((album) => album.id === scope.albumId)?.albumName || 'Album'
   }
   if (scope.kind === 'favorites') return 'Favorites'
+  if (scope.kind === 'duplicates') return 'Duplicates'
+  if (scope.kind === 'location') {
+    return [scope.country, scope.city, scope.state].filter(Boolean).join(' · ') || 'Location'
+  }
+  if (scope.kind === 'camera') {
+    return [scope.make, scope.model].filter(Boolean).join(' · ') || 'Camera'
+  }
   return 'Date range'
 })
 
@@ -69,18 +84,39 @@ const selectedPersonName = computed(() => {
 
 // Keyboard navigation
 function handleKeydown(e: KeyboardEvent) {
+  // Escape dismisses the topmost overlay and never triggers review actions.
+  if (e.key === 'Escape') {
+    if (isDetailOpen.value) {
+      e.preventDefault()
+      isDetailOpen.value = false
+    } else if (showAlbumPicker.value) {
+      e.preventDefault()
+      showAlbumPicker.value = false
+    } else if (showScopePicker.value) {
+      e.preventDefault()
+      showScopePicker.value = false
+    } else if (showPersonPicker.value) {
+      e.preventDefault()
+      showPersonPicker.value = false
+    }
+    return
+  }
+
+  // Uniform suppression: typing in inputs or any open overlay/picker blocks
+  // every shortcut below (including undo and arrow-key decisions).
+  if (shouldIgnoreHotkeys()) return
+  if (!currentAsset.value) return
+
   if (e.key === 'ArrowUp') {
     e.preventDefault()
     undoLastAction()
     return
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
     e.preventDefault()
     undoLastAction()
     return
   }
-
-  if (!currentAsset.value) return
 
   if (e.key === 'ArrowRight') {
     e.preventDefault()
@@ -89,11 +125,18 @@ function handleKeydown(e: KeyboardEvent) {
     e.preventDefault()
     deletePhoto()
   } else if (e.key.toLowerCase() === 'f') {
-    if (shouldIgnoreHotkeys()) return
     e.preventDefault()
     toggleFavorite()
+  } else if (e.key.toLowerCase() === 's') {
+    e.preventDefault()
+    skipPhoto()
+  } else if (e.key.toLowerCase() === 'a') {
+    e.preventDefault()
+    void openAlbumPicker()
+  } else if (e.key.toLowerCase() === 'z' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault()
+    isDetailOpen.value = !isDetailOpen.value
   } else if (/^[0-9]$/.test(e.key)) {
-    if (shouldIgnoreHotkeys()) return
     const albumId = preferencesStore.albumHotkeys[e.key]
     if (!albumId) {
       uiStore.toast(`No album configured for key ${e.key}`, 'info', 2000)
@@ -107,7 +150,13 @@ function handleKeydown(e: KeyboardEvent) {
 function shouldIgnoreHotkeys(): boolean {
   const active = document.activeElement as HTMLElement | null
   const isTyping = active && ['INPUT', 'TEXTAREA'].includes(active.tagName)
-  return !!isTyping || showAlbumPicker.value || showScopePicker.value || showPersonPicker.value
+  return (
+    !!isTyping ||
+    showAlbumPicker.value ||
+    showScopePicker.value ||
+    showPersonPicker.value ||
+    isDetailOpen.value
+  )
 }
 
 async function openScopePicker() {
@@ -303,10 +352,12 @@ onUnmounted(() => {
         <div class="flex-1 min-h-0 flex items-center justify-center p-1">
           <div v-if="currentAsset" class="w-full h-full max-w-4xl max-h-full">
             <SwipeCard
+              ref="swipeCardRef"
               :asset="currentAsset"
               :person-name="selectedPersonName"
               @keep="keepPhoto"
               @delete="deletePhoto"
+              @inspect="isDetailOpen = true"
             />
           </div>
 
@@ -329,6 +380,7 @@ onUnmounted(() => {
             :is-favorite="currentAsset?.isFavorite ?? false"
             @keep="keepPhoto"
             @delete="deletePhoto"
+            @skip="skipPhoto"
             @undo="undoLastAction"
             @toggle-favorite="toggleFavorite"
             @open-album-picker="openAlbumPicker"
@@ -369,7 +421,7 @@ onUnmounted(() => {
               </span>
             </div>
             <p class="hidden sm:flex">
-              (←/→) • Ctrl+Z or ↑ (back) • F = favorite • 0–9 = album hotkeys
+              (←/→) • Ctrl+Z or ↑ (back) • F = favorite • S = skip • A = album • Z = zoom • 0–9 = album hotkeys
             </p>
           </div>
         </div>
@@ -406,6 +458,13 @@ onUnmounted(() => {
       @close="closePersonPicker"
       @select="handlePersonSelect"
       @clear="handlePersonClear"
+    />
+
+    <AssetDetailOverlay
+      :open="isDetailOpen && !!currentAsset"
+      :asset="currentAsset"
+      :video-src="currentVideoSrc"
+      @close="isDetailOpen = false"
     />
   </div>
 </template>

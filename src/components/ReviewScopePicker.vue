@@ -17,12 +17,39 @@ const emit = defineEmits<{
 
 const from = ref('')
 const to = ref('')
+const locationCountry = ref('')
+const locationCity = ref('')
+const locationState = ref('')
+const cameraMake = ref('')
+const cameraModel = ref('')
 const touchStart = ref<{ x: number; y: number } | null>(null)
 const touchDelta = ref({ x: 0, y: 0 })
 
 function applyDateRange() {
   if (!from.value || !to.value) return
   emit('apply', { kind: 'dateRange', from: from.value, to: to.value })
+}
+
+function applyLocation() {
+  const country = locationCountry.value.trim()
+  const city = locationCity.value.trim()
+  const state = locationState.value.trim()
+  if (!country && !city && !state) return
+  const payload: Extract<ReviewScope, { kind: 'location' }> = { kind: 'location' }
+  if (country) payload.country = country
+  if (city) payload.city = city
+  if (state) payload.state = state
+  emit('apply', payload)
+}
+
+function applyCamera() {
+  const make = cameraMake.value.trim()
+  const model = cameraModel.value.trim()
+  if (!make && !model) return
+  const payload: Extract<ReviewScope, { kind: 'camera' }> = { kind: 'camera' }
+  if (make) payload.make = make
+  if (model) payload.model = model
+  emit('apply', payload)
 }
 
 function handleTouchStart(event: TouchEvent) {
@@ -59,6 +86,11 @@ watch(
     if (!isOpen) {
       from.value = ''
       to.value = ''
+      locationCountry.value = ''
+      locationCity.value = ''
+      locationState.value = ''
+      cameraMake.value = ''
+      cameraModel.value = ''
     }
   }
 )
@@ -183,6 +215,106 @@ watch(
                   Review only assets you have favorited
                 </span>
               </button>
+            </div>
+
+            <!-- Duplicates -->
+            <div>
+              <p class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-2">Cleanup</p>
+              <button
+                type="button"
+                class="w-full text-left px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 hover:border-blue-400 transition-colors"
+                @click="emit('apply', { kind: 'duplicates' })"
+              >
+                <span class="font-medium text-gray-900 dark:text-gray-100">Duplicates</span>
+                <span class="block text-xs text-gray-500 dark:text-gray-400">
+                  Resolve detected duplicate groups — keep one, trash the rest
+                </span>
+              </button>
+            </div>
+
+            <!-- Location -->
+            <div>
+              <p class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-2">Location</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                Assets without tagged location never match — screenshots and chats are excluded.
+              </p>
+              <div class="flex flex-col gap-3">
+                <div class="grid grid-cols-2 gap-3">
+                  <label class="flex flex-col gap-1 text-xs text-gray-500 dark:text-gray-400">
+                    Country
+                    <input
+                      v-model="locationCountry"
+                      type="text"
+                      placeholder="Germany"
+                      class="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </label>
+                  <label class="flex flex-col gap-1 text-xs text-gray-500 dark:text-gray-400">
+                    City
+                    <input
+                      v-model="locationCity"
+                      type="text"
+                      placeholder="Berlin"
+                      class="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </label>
+                </div>
+                <div class="flex gap-3">
+                  <label class="flex-1 flex flex-col gap-1 text-xs text-gray-500 dark:text-gray-400">
+                    State
+                    <input
+                      v-model="locationState"
+                      type="text"
+                      placeholder="optional"
+                      class="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    class="self-end px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    :disabled="!locationCountry.trim() && !locationCity.trim() && !locationState.trim()"
+                    @click="applyLocation"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Camera -->
+            <div>
+              <p class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-2">Camera</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                Assets without tagged camera never match — screenshots and chats are excluded.
+              </p>
+              <div class="flex flex-col sm:flex-row gap-3">
+                <label class="flex-1 flex flex-col gap-1 text-xs text-gray-500 dark:text-gray-400">
+                  Make
+                  <input
+                    v-model="cameraMake"
+                    type="text"
+                    placeholder="Apple"
+                    class="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
+                <label class="flex-1 flex flex-col gap-1 text-xs text-gray-500 dark:text-gray-400">
+                  Model
+                  <input
+                    v-model="cameraModel"
+                    type="text"
+                    placeholder="iPhone 15 Pro"
+                    class="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="self-end px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  :disabled="!cameraMake.trim() && !cameraModel.trim()"
+                  @click="applyCamera"
+                >
+                  Apply
+                </button>
+              </div>
             </div>
 
             <div class="pt-2">
