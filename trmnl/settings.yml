@@ -4,7 +4,7 @@ no_screen_padding: 'no'
 dark_mode: 'no'
 static_data: ''
 polling_verb: get
-framework_version: 2.3.7
+framework_version: latest
 serverless_language:
 polling_url: "https://<your-immich-swipe-host>/api/trmnl/stats"
 polling_headers: ''
@@ -33,12 +33,12 @@ oauth_fixed_expiry_ms: ''
 custom_fields:
 - keyname: bio
   name: About This Plugin
-  category: other
+  category: entertainment
   field_type: author_bio
   description: Wall display of your photo-swipe statistics - how many photos you kept and deleted while swiping through your Immich library.
-  github_url: https://github.com/your-name/immich-swipe
-  learn_more_url: https://<your-immich-swipe-host>/
-  email_address:
+  github_url: https://github.com/martynvdijke/immich-swipe
+  learn_more_url: https://github.com/martynvdijke/immich-swipe
+  email_address: martyn@vandijke.xyz
 - keyname: url
   field_type: url
   name: Address of your Immich Swipe instance
