@@ -1,3 +1,10 @@
+## [1.9.3](https://github.com/martynvdijke/immich-swipe/compare/v1.9.2...v1.9.3) (2026-08-28)
+
+
+### Bug Fixes
+
+* **ci:** remove unsupported --diff flag from pinact ([79b4663](https://github.com/martynvdijke/immich-swipe/commit/79b466362daa6451bfec73304cadadc56d425c9c))
+
 ## [1.9.2](https://github.com/martynvdijke/immich-swipe/compare/v1.9.1...v1.9.2) (2026-08-26)
 
 
