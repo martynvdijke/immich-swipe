@@ -1,3 +1,11 @@
+## [1.9.4](https://github.com/martynvdijke/immich-swipe/compare/v1.9.3...v1.9.4) (2026-08-28)
+
+
+### Bug Fixes
+
+* **ci:** make pinact check non-blocking ([00d5557](https://github.com/martynvdijke/immich-swipe/commit/00d5557119f0d803bd6d2c59eb6d76aaec372a3e))
+* **ci:** update actionlint to v1.7.12 (v1 tag removed upstream) ([008c8f3](https://github.com/martynvdijke/immich-swipe/commit/008c8f3e44020475090a83a42befcbac1e43ee47))
+
 ## [1.9.3](https://github.com/martynvdijke/immich-swipe/compare/v1.9.2...v1.9.3) (2026-08-28)
 
 
