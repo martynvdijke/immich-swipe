@@ -99,7 +99,7 @@ jobs:
     steps:
       - name: Release Published Notification
         if: needs.ci.result == 'success' && needs.release.result == 'success' && needs.release.outputs.new_release_published == 'true'
-        uses: eikendev/gotify-action@master
+        uses: eikendev/gotify-action@cb63800546f25c393ab96f09d12a094138c514f4 # master
         with:
           gotify_api_base: ${{ secrets.GOTIFY_API_BASE }}
           gotify_app_token: ${{ secrets.GOTIFY_APP_TOKEN }}
@@ -108,7 +108,7 @@ jobs:
 
       - name: No Release Needed Notification
         if: needs.ci.result == 'success' && needs.release.result == 'success' && needs.release.outputs.new_release_published != 'true'
-        uses: eikendev/gotify-action@master
+        uses: eikendev/gotify-action@cb63800546f25c393ab96f09d12a094138c514f4 # master
         with:
           gotify_api_base: ${{ secrets.GOTIFY_API_BASE }}
           gotify_app_token: ${{ secrets.GOTIFY_APP_TOKEN }}
@@ -117,7 +117,7 @@ jobs:
 
       - name: Failure Notification
         if: needs.ci.result != 'success' || needs.release.result != 'success'
-        uses: eikendev/gotify-action@master
+        uses: eikendev/gotify-action@cb63800546f25c393ab96f09d12a094138c514f4 # master
         with:
           gotify_api_base: ${{ secrets.GOTIFY_API_BASE }}
           gotify_app_token: ${{ secrets.GOTIFY_APP_TOKEN }}
