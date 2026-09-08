@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/martynvdijke/immich-swipe/compare/v1.9.11...v1.10.0) (2026-09-08)
+
+
+### Features
+
+* **auth:** add SSO login via Immich native OAuth/OIDC ([0c400ad](https://github.com/martynvdijke/immich-swipe/commit/0c400ad8caa6830f3ac03381e6f3856dc7315e6e))
+
 ## [1.9.11](https://github.com/martynvdijke/immich-swipe/compare/v1.9.10...v1.9.11) (2026-09-07)
 
 ## [1.9.10](https://github.com/martynvdijke/immich-swipe/compare/v1.9.9...v1.9.10) (2026-09-03)
