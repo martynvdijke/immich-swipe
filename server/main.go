@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -41,6 +43,7 @@ type Config struct {
 	StaticDir     string
 	StatsFile     string // optional TRMNL stats persistence path ("" = memory only)
 	SessionDBFile string // optional IMMICH_SESSIONS_DB SQLite path ("" = in-memory sessions)
+	PublicURL     string // optional SWIPE_PUBLIC_URL override for the OAuth callback base URL ("" = derived from the request)
 	Users         []UserConfig
 }
 
@@ -51,6 +54,7 @@ func loadConfig() Config {
 		ServerURL:     os.Getenv("IMMICH_SERVER_URL"),
 		StatsFile:     os.Getenv("TRMNL_STATS_FILE"),
 		SessionDBFile: os.Getenv("IMMICH_SESSIONS_DB"),
+		PublicURL:     os.Getenv("SWIPE_PUBLIC_URL"),
 	}
 	for i := 1; ; i++ {
 		// Primary naming: IMMICH_API_KEY_<N>_NAME / IMMICH_API_KEY_<N>_KEY
@@ -368,12 +372,19 @@ type Server struct {
 	accounts  *AccountStore
 	stats     *StatsStore
 	transport http.RoundTripper // optional instrumented transport for the reverse proxy
+	// In-progress OAuth logins (state -> pending) and single-use browser
+	// handoff codes (code -> session), both short-lived and in-memory only.
+	oauthMu      sync.Mutex
+	oauthPending map[string]oauthPending
+	oauthCodes   map[string]oauthCode
 }
 
 func NewServer(cfg Config) *Server {
 	s := &Server{
-		config:  cfg,
-		stats:   NewStatsStore(cfg.StatsFile),
+		config:       cfg,
+		stats:        NewStatsStore(cfg.StatsFile),
+		oauthPending: make(map[string]oauthPending),
+		oauthCodes:   make(map[string]oauthCode),
 	}
 	// Sessions and accounts share one SQLite handle (both nil when running
 	// in-memory); the account store migrates env-configured users into
@@ -405,6 +416,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case path == "/api/auth/config":
 		s.configHandler(w, r)
+
+	case path == "/api/auth/oauth/start":
+		s.oauthStartHandler(w, r)
+
+	case path == "/api/auth/oauth/callback":
+		s.oauthCallbackHandler(w, r)
+
+	case path == "/api/auth/oauth/finish":
+		s.oauthFinishHandler(w, r)
 
 	case path == "/api/auth/account":
 		s.authMiddleware(http.HandlerFunc(s.accountHandler)).ServeHTTP(w, r)
@@ -445,10 +465,14 @@ func (s *Server) configHandler(w http.ResponseWriter, r *http.Request) {
 		userNames[i] = u.Name
 	}
 
+	oauthEnabled, oauthButtonText := s.immichOAuthConfig(s.config.ServerURL)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"users":            userNames,
 		"defaultServerUrl": s.config.ServerURL,
 		"version":          Version,
+		"oauthEnabled":     oauthEnabled,
+		"oauthButtonText":  oauthButtonText,
 	})
 }
 
@@ -801,6 +825,355 @@ func (s *Server) loginWithCredentials(w http.ResponseWriter, email, password, se
 		"token":     token,
 		"userName":  userName,
 		"serverUrl": serverURL,
+		"mode":      "accessToken",
+	})
+}
+
+// ─── OAuth / OIDC login (Immich-native SSO) ────────────────────────────────
+//
+// Immich owns the IdP relationship: swipe only drives Immich's
+// POST /api/oauth/authorize + POST /api/oauth/callback flow and converts the
+// resulting Immich access token into a swipe accessToken-mode session.
+// PKCE verifiers, state, and Immich OAuth cookies never leave the backend;
+// the browser handoff uses a single-use code (no tokens in redirect URLs).
+//
+// # ponytail: in-memory pending/code maps with lazy purge; persist if logins
+// regularly span restarts or multiple replicas.
+
+// oauthPending is an in-progress login between /oauth/start and /oauth/callback.
+type oauthPending struct {
+	CodeVerifier string
+	Cookies      []*http.Cookie // immich_oauth_* cookies set by Immich authorize
+	ServerURL    string
+	ExpiresAt    time.Time
+}
+
+// oauthCode is a single-use browser handoff for a completed OAuth login.
+type oauthCode struct {
+	Token     string // swipe session token (not the Immich access token)
+	UserName  string
+	ServerURL string
+	ExpiresAt time.Time
+}
+
+const (
+	oauthPendingTTL = 10 * time.Minute
+	oauthCodeTTL    = 5 * time.Minute
+)
+
+// immichOAuthConfig reports whether the Immich server has OAuth enabled.
+// Unreachable or unconfigured servers report disabled (fail closed).
+func (s *Server) immichOAuthConfig(serverURL string) (enabled bool, buttonText string) {
+	if serverURL == "" {
+		return false, ""
+	}
+	targetURL := strings.TrimRight(serverURL, "/") + "/api/public/config"
+	req, err := http.NewRequest("GET", targetURL, nil)
+	if err != nil {
+		return false, ""
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, ""
+	}
+	var cfg struct {
+		OAuth struct {
+			Enabled    bool   `json:"enabled"`
+			ButtonText string `json:"buttonText"`
+		} `json:"oauth"`
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, ""
+	}
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return false, ""
+	}
+	return cfg.OAuth.Enabled, cfg.OAuth.ButtonText
+}
+
+// oauthPublicBase is the external base URL of this server, used as the OAuth
+// redirect_uri. Prefers SWIPE_PUBLIC_URL; otherwise derives scheme+host from
+// the request (honoring X-Forwarded-Proto/Host behind reverse proxies).
+func (s *Server) oauthPublicBase(r *http.Request) string {
+	if s.config.PublicURL != "" {
+		return strings.TrimRight(s.config.PublicURL, "/")
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = strings.ToLower(strings.Split(proto, ",")[0])
+	}
+	host := r.Host
+	if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+		host = strings.Split(fwdHost, ",")[0]
+	}
+	return scheme + "://" + strings.TrimSpace(host)
+}
+
+// oauthPostJSON posts a JSON body to Immich, replaying cookies. It returns the
+// response body on 200/201, the raw status otherwise. Never logs bodies.
+func oauthPostJSON(targetURL string, payload interface{}, cookies []*http.Cookie) (body []byte, status int) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, http.StatusInternalServerError
+	}
+	req, err := http.NewRequest("POST", targetURL, bytes.NewReader(raw))
+	if err != nil {
+		return nil, http.StatusInternalServerError
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, resp.StatusCode
+	}
+	return respBody, resp.StatusCode
+}
+
+// oauthStartHandler begins an SSO login: it calls Immich authorize with a
+// fresh state + PKCE challenge and returns the IdP URL for the browser.
+func (s *Server) oauthStartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot read request body"})
+		return
+	}
+	defer r.Body.Close()
+	var req struct {
+		ServerURL string `json:"serverUrl"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	serverURL := req.ServerURL
+	if serverURL == "" {
+		serverURL = s.config.ServerURL
+	}
+	if serverURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no server URL configured"})
+		return
+	}
+
+	enabled, _ := s.immichOAuthConfig(serverURL)
+	if !enabled {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "OAuth login is not enabled on this Immich server", "code": "oauth_not_enabled"})
+		return
+	}
+
+	state := generateToken()
+	verifierBytes := make([]byte, 32)
+	if _, err := rand.Read(verifierBytes); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	verifier := base64.RawURLEncoding.EncodeToString(verifierBytes)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	redirectURI := s.oauthPublicBase(r) + "/api/auth/oauth/callback"
+
+	raw, err := json.Marshal(map[string]string{
+		"redirectUri":   redirectURI,
+		"state":         state,
+		"codeChallenge": challenge,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	authReq, err := http.NewRequest("POST", strings.TrimRight(serverURL, "/")+"/api/oauth/authorize", bytes.NewReader(raw))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+		return
+	}
+	authReq.Header.Set("Content-Type", "application/json")
+	authReq.Header.Set("Accept", "application/json")
+	authResp, err := http.DefaultClient.Do(authReq)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
+		return
+	}
+	defer authResp.Body.Close()
+	respBody, _ := io.ReadAll(authResp.Body)
+	if authResp.StatusCode == http.StatusBadRequest {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "OAuth login is not enabled on this Immich server", "code": "oauth_not_enabled"})
+		return
+	}
+	if authResp.StatusCode != http.StatusOK && authResp.StatusCode != http.StatusCreated {
+		log.Printf("Immich OAuth authorize failed: status=%d", authResp.StatusCode)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
+		return
+	}
+	var authorize struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(respBody, &authorize); err != nil || authorize.URL == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unexpected response from Immich"})
+		return
+	}
+
+	s.oauthMu.Lock()
+	now := time.Now()
+	for k, p := range s.oauthPending {
+		if now.After(p.ExpiresAt) {
+			delete(s.oauthPending, k)
+		}
+	}
+	s.oauthPending[state] = oauthPending{
+		CodeVerifier: verifier,
+		Cookies:      authResp.Cookies(),
+		ServerURL:    serverURL,
+		ExpiresAt:    now.Add(oauthPendingTTL),
+	}
+	s.oauthMu.Unlock()
+
+	log.Printf("OAuth login started: server=%q state=%s…", serverURL, state[:12])
+	writeJSON(w, http.StatusOK, map[string]string{"url": authorize.URL, "state": state})
+}
+
+// oauthCallbackHandler handles the IdP redirect: it validates state,
+// completes the Immich callback, creates the swipe session, and hands the
+// browser a single-use code via a 302 to /login.
+func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	fail := func() {
+		http.Redirect(w, r, "/login?oauthError=oauth_failed", http.StatusFound)
+	}
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	if code == "" || state == "" {
+		http.Redirect(w, r, "/login?oauthError=invalid_state", http.StatusFound)
+		return
+	}
+
+	s.oauthMu.Lock()
+	pending, ok := s.oauthPending[state]
+	if ok {
+		delete(s.oauthPending, state)
+	}
+	s.oauthMu.Unlock()
+	if !ok || time.Now().After(pending.ExpiresAt) {
+		http.Redirect(w, r, "/login?oauthError=invalid_state", http.StatusFound)
+		return
+	}
+
+	callbackURL := s.oauthPublicBase(r) + "/api/auth/oauth/callback?code=" +
+		url.QueryEscape(code) + "&state=" + url.QueryEscape(state)
+	respBody, status := oauthPostJSON(
+		strings.TrimRight(pending.ServerURL, "/")+"/api/oauth/callback",
+		map[string]string{"url": callbackURL, "state": state, "codeVerifier": pending.CodeVerifier},
+		pending.Cookies,
+	)
+	if status == 0 {
+		log.Printf("Immich OAuth callback failed: unreachable")
+		fail()
+		return
+	}
+	if respBody == nil {
+		log.Printf("Immich OAuth callback failed: status=%d", status)
+		fail()
+		return
+	}
+	var loginResult immichLoginResponse
+	if err := json.Unmarshal(respBody, &loginResult); err != nil || loginResult.AccessToken == "" {
+		fail()
+		return
+	}
+
+	valid, displayName, err := s.validateAccessToken(pending.ServerURL, loginResult.AccessToken)
+	if err != nil || !valid {
+		log.Printf("OAuth token validation failed: valid=%v err=%v", valid, err)
+		fail()
+		return
+	}
+	userName := displayName
+	if userName == "" {
+		userName = loginResult.Name
+	}
+	if userName == "" {
+		userName = loginResult.UserEmail
+	}
+
+	token := s.session.CreateAccessToken(userName, loginResult.AccessToken, pending.ServerURL, loginResult.UserEmail, loginResult.UserID)
+	oneTime := generateToken()
+	s.oauthMu.Lock()
+	now := time.Now()
+	for k, c := range s.oauthCodes {
+		if now.After(c.ExpiresAt) {
+			delete(s.oauthCodes, k)
+		}
+	}
+	s.oauthCodes[oneTime] = oauthCode{
+		Token:     token,
+		UserName:  userName,
+		ServerURL: pending.ServerURL,
+		ExpiresAt: now.Add(oauthCodeTTL),
+	}
+	s.oauthMu.Unlock()
+
+	log.Printf("Login: mode=accessToken(oauth) user=%q session=%s…", userName, token[:12])
+	http.Redirect(w, r, "/login?oauthCode="+url.QueryEscape(oneTime), http.StatusFound)
+}
+
+// oauthFinishHandler exchanges a single-use handoff code for the swipe
+// session payload the frontend stores via the normal success path.
+func (s *Server) oauthFinishHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot read request body"})
+		return
+	}
+	defer r.Body.Close()
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid code", "code": "invalid_code"})
+		return
+	}
+
+	s.oauthMu.Lock()
+	entry, ok := s.oauthCodes[req.Code]
+	if ok {
+		delete(s.oauthCodes, req.Code)
+	}
+	s.oauthMu.Unlock()
+	if !ok || time.Now().After(entry.ExpiresAt) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or expired code", "code": "invalid_code"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token":     entry.Token,
+		"userName":  entry.UserName,
+		"serverUrl": entry.ServerURL,
 		"mode":      "accessToken",
 	})
 }

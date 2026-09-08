@@ -5,10 +5,10 @@ const SESSIONS_STORAGE_KEY = 'immich-swipe-sessions'
 const ACTIVE_SESSION_KEY = 'immich-swipe-active-session'
 const LEGACY_STORAGE_KEY = 'immich-swipe-session'
 
-export type LoginMethod = 'env-user' | 'manual' | 'credentials' | 'account' | 'account-create'
+export type LoginMethod = 'env-user' | 'manual' | 'credentials' | 'account' | 'account-create' | 'oauth'
 
 export type LoginResult =
-  | { ok: true }
+  | { ok: true; url?: string }
   | { ok: false; error: string; code?: string }
 
 interface SessionRecord {
@@ -42,6 +42,9 @@ export const useAuthStore = defineStore('auth', () => {
   const envUsers = ref<string[]>([])
   const defaultServerUrl = ref<string | null>(null)
   const serverVersion = ref<string>('')
+  /** Immich-native OAuth/SSO availability (from GET /api/auth/config). */
+  const oauthEnabled = ref(false)
+  const oauthButtonText = ref('')
   // Set by the 401 handler / failed auto-login to prevent the router guard
   // from re-attempting auto-login into an infinite loop.
   const autoLoginBlocked = ref(false)
@@ -193,6 +196,8 @@ export const useAuthStore = defineStore('auth', () => {
         envUsers.value = data.users || []
         defaultServerUrl.value = data.defaultServerUrl || null
         serverVersion.value = data.version || ''
+        oauthEnabled.value = data.oauthEnabled === true
+        oauthButtonText.value = typeof data.oauthButtonText === 'string' ? data.oauthButtonText : ''
       }
     } catch {
       // Backend not available yet
@@ -380,6 +385,50 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /** SSO login step 1: ask the backend for the IdP URL. The caller
+   *  performs the full-page redirect to `url` on success. */
+  async function startOAuthLogin(serverUrl: string): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/oauth/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverUrl }),
+      })
+      if (!res.ok) {
+        const { error, code } = await parseLoginResult(res, 'SSO login is not available for this server.')
+        return { ok: false, error, code }
+      }
+      const data = await res.json()
+      if (typeof data.url !== 'string' || !data.url) {
+        return { ok: false, error: 'SSO login is not available for this server.' }
+      }
+      return { ok: true, url: data.url }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
+  /** SSO login step 2: exchange the single-use handoff code from the
+   *  backend's /login?oauthCode= redirect for a swipe session. */
+  async function loginWithOAuthCode(code: string): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/oauth/finish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      })
+      if (!res.ok) {
+        const { error, code: errCode } = await parseLoginResult(res, 'SSO login failed. Please try again.')
+        return { ok: false, error, code: errCode }
+      }
+      const data = await res.json()
+      applyLoginSuccess(data, data.userName || 'sso', data.serverUrl || '')
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
   /** Activate a stored session without any credential re-entry. */
   function switchTo(key: string): void {
     if (
@@ -461,6 +510,8 @@ export const useAuthStore = defineStore('auth', () => {
     envUsers,
     defaultServerUrl,
     serverVersion,
+    oauthEnabled,
+    oauthButtonText,
     autoLoginBlocked,
     pendingPasswordUser,
     isLoggedIn,
@@ -474,6 +525,8 @@ export const useAuthStore = defineStore('auth', () => {
     loginWithCredentials,
     loginWithAccount,
     loginWithAccountCreate,
+    startOAuthLogin,
+    loginWithOAuthCode,
     setAccountPassword,
     switchTo,
     restoreLastActive,

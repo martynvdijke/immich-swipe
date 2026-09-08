@@ -6,14 +6,16 @@ import LoginView from '@/views/LoginView.vue'
 
 const m = vi.hoisted(() => ({
   push: vi.fn(),
+  replace: vi.fn(),
+  routeQuery: {} as Record<string, unknown>,
 }))
 
 vi.mock('vue-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('vue-router')>()
   return {
     ...actual,
-    useRoute: () => ({ query: {} }),
-    useRouter: () => ({ push: m.push }),
+    useRoute: () => ({ query: m.routeQuery }),
+    useRouter: () => ({ push: m.push, replace: m.replace }),
   }
 })
 
@@ -54,6 +56,8 @@ describe('LoginView', () => {
     pinia = createPinia()
     setActivePinia(pinia)
     m.push.mockClear()
+    m.replace.mockClear()
+    m.routeQuery = {}
   })
 
   afterEach(() => {
@@ -142,5 +146,109 @@ describe('LoginView', () => {
       serverUrl: 'https://immich.example',
     })
     expect(m.push).toHaveBeenCalledWith('/')
+  })
+
+  it('hides the SSO button when OAuth is not enabled', async () => {
+    stubLogin([], { status: 200, body: {} })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('Login with SSO')
+  })
+
+  it('shows the SSO button with the server button text and starts the flow', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api/auth/config')) {
+          return new Response(
+            JSON.stringify({
+              users: [],
+              defaultServerUrl: 'https://immich.example',
+              version: 'test',
+              oauthEnabled: true,
+              oauthButtonText: 'Continue with SSO',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        if (url.includes('/api/auth/oauth/start')) {
+          return new Response(JSON.stringify({ url: 'https://idp.example/auth', state: 's' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response('not found', { status: 404 })
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    const sso = wrapper.findAll('button').find((b) => b.text() === 'Continue with SSO')!
+    expect(sso.exists()).toBe(true)
+
+    // jsdom doesn't navigate: capture the redirect target instead.
+    const realLocation = window.location
+    const fakeLocation = { href: '' }
+    Object.defineProperty(window, 'location', { value: fakeLocation, writable: true, configurable: true })
+    try {
+      await wrapper.find('input#serverUrl').setValue('https://immich.example')
+      await sso.trigger('click')
+      await flushPromises()
+    } finally {
+      Object.defineProperty(window, 'location', { value: realLocation, configurable: true })
+    }
+
+    const fetchMock = vi.mocked(fetch)
+    const startCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/auth/oauth/start'))
+    expect(startCall).toBeTruthy()
+    expect(JSON.parse(String((startCall?.[1] as RequestInit).body))).toEqual({
+      serverUrl: 'https://immich.example',
+    })
+    expect(fakeLocation.href).toBe('https://idp.example/auth')
+  })
+
+  it('completes SSO login from an oauthCode query', async () => {
+    m.routeQuery = { oauthCode: 'handoff-123' }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api/auth/config')) {
+          return new Response(JSON.stringify({ users: [], defaultServerUrl: null, version: 'test' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/auth/oauth/finish')) {
+          return new Response(
+            JSON.stringify({
+              token: 't',
+              userName: 'SSO User',
+              serverUrl: 'https://immich.example',
+              mode: 'accessToken',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        return new Response('not found', { status: 404 })
+      }),
+    )
+    mountView()
+    await flushPromises()
+
+    expect(m.replace).toHaveBeenCalledWith({ path: '/login', query: {} })
+    expect(m.push).toHaveBeenCalledWith('/')
+  })
+
+  it('shows an error for an oauthError query', async () => {
+    m.routeQuery = { oauthError: 'invalid_state' }
+    stubLogin([], { status: 200, body: {} })
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('SSO login expired')
+    expect(m.push).not.toHaveBeenCalled()
   })
 })

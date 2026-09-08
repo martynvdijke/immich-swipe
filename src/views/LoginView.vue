@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -40,6 +40,49 @@ function setMode(mode: LoginMode) {
   error.value = ''
 }
 
+/** SSO login: redirect the browser to the IdP via the backend. */
+async function startSso() {
+  error.value = ''
+  const url = serverUrl.value.trim() || authStore.defaultServerUrl || ''
+  if (!url) {
+    error.value = 'Please enter your Immich server URL'
+    return
+  }
+  isSubmitting.value = true
+  const result = await authStore.startOAuthLogin(url)
+  if (result.ok && result.url) {
+    window.location.href = result.url
+  } else if (!result.ok) {
+    error.value = result.error
+    isSubmitting.value = false
+  }
+}
+
+// Consume the backend's OAuth handoff (full-page redirect lands here).
+onMounted(async () => {
+  const oauthCode = typeof route.query.oauthCode === 'string' ? route.query.oauthCode : ''
+  const oauthError = typeof route.query.oauthError === 'string' ? route.query.oauthError : ''
+  if (!oauthCode && !oauthError) return
+  // Strip the handoff params so a reload doesn't replay them.
+  const { oauthCode: _code, oauthError: _err, ...rest } = route.query
+  router.replace({ path: '/login', query: rest })
+  if (oauthError) {
+    error.value =
+      oauthError === 'invalid_state'
+        ? 'SSO login expired. Please try again.'
+        : 'SSO login failed. Please try again.'
+    return
+  }
+  isSubmitting.value = true
+  const result = await authStore.loginWithOAuthCode(oauthCode)
+  isSubmitting.value = false
+  if (result.ok) {
+    uiStore.toast('Connected successfully!', 'success')
+    router.push('/')
+  } else {
+    error.value = result.error
+  }
+})
 /** One-click login with an env-configured user (server-side API key). */
 async function pickUser(name: string) {
   error.value = ''
@@ -506,6 +549,34 @@ async function handleSubmit() {
           <span v-else>Connect</span>
         </button>
       </form>
+
+      <!-- SSO login (only when Immich has OAuth enabled) -->
+      <div v-if="authStore.oauthEnabled" class="mt-6">
+        <div class="flex items-center gap-3 mb-4">
+          <div class="flex-1 h-px"
+            :class="uiStore.isDarkMode ? 'bg-gray-800' : 'bg-gray-200'"
+          ></div>
+          <span class="text-xs"
+            :class="uiStore.isDarkMode ? 'text-gray-500' : 'text-gray-500'"
+          >
+            or
+          </span>
+          <div class="flex-1 h-px"
+            :class="uiStore.isDarkMode ? 'bg-gray-800' : 'bg-gray-200'"
+          ></div>
+        </div>
+        <button
+          type="button"
+          :disabled="isSubmitting"
+          class="w-full py-3 px-4 rounded-lg font-medium border transition-colors disabled:opacity-50"
+          :class="uiStore.isDarkMode
+            ? 'border-gray-700 bg-gray-900 text-white hover:bg-gray-800'
+            : 'border-gray-300 bg-white text-black hover:bg-gray-100'"
+          @click="startSso"
+        >
+          {{ authStore.oauthButtonText || 'Login with SSO' }}
+        </button>
+      </div>
 
       <!-- Theme toggle -->
       <div class="mt-8 flex justify-center">

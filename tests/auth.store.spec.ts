@@ -1243,3 +1243,154 @@ describe('auth store loginWithAccountCreate', () => {
     expect(auth.isLoggedIn).toBe(false)
   })
 })
+
+describe('auth store OAuth login', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.stubGlobal('fetch', vi.fn())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  function stubConfig(oauthEnabled: boolean) {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(
+          JSON.stringify({
+            users: [],
+            defaultServerUrl: null,
+            version: 'test',
+            oauthEnabled,
+            oauthButtonText: oauthEnabled ? 'Continue with SSO' : '',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response('not found', { status: 404 })
+    })
+    return fetchMock
+  }
+
+  it('fetchConfig exposes oauthEnabled and oauthButtonText', async () => {
+    stubConfig(true)
+    const auth = useAuthStore()
+    await auth.fetchConfig()
+    expect(auth.oauthEnabled).toBe(true)
+    expect(auth.oauthButtonText).toBe('Continue with SSO')
+  })
+
+  it('startOAuthLogin returns the IdP url', async () => {
+    const fetchMock = stubConfig(true)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/api/auth/oauth/start')) {
+        return new Response(JSON.stringify({ url: 'https://idp.example/auth', state: 's' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response('not found', { status: 404 })
+    })
+
+    const auth = useAuthStore()
+    const result = await auth.startOAuthLogin('https://immich.example')
+
+    expect(result).toEqual({ ok: true, url: 'https://idp.example/auth' })
+    const startCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/auth/oauth/start'))
+    expect(JSON.parse(String((startCall?.[1] as RequestInit).body))).toEqual({
+      serverUrl: 'https://immich.example',
+    })
+  })
+
+  it('startOAuthLogin surfaces oauth_not_enabled', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ error: 'OAuth disabled', code: 'oauth_not_enabled' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const auth = useAuthStore()
+    const result = await auth.startOAuthLogin('https://immich.example')
+
+    expect(result).toEqual({ ok: false, error: 'OAuth disabled', code: 'oauth_not_enabled' })
+  })
+
+  it('loginWithOAuthCode stores an accessToken session', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (url.includes('/api/auth/oauth/finish')) {
+        return new Response(
+          JSON.stringify({
+            token: 'oauth-session',
+            userName: 'SSO User',
+            serverUrl: 'https://immich.example',
+            mode: 'accessToken',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response('not found', { status: 404 })
+    })
+
+    const auth = useAuthStore()
+    const result = await auth.loginWithOAuthCode('handoff-123')
+
+    expect(result).toEqual({ ok: true })
+    expect(auth.sessionToken).toBe('oauth-session')
+    expect(auth.currentUserName).toBe('SSO User')
+    expect(auth.activeSessionMode).toBe('accessToken')
+    expect(auth.isLoggedIn).toBe(true)
+  })
+
+  it('loginWithOAuthCode surfaces invalid_code', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/auth/config')) {
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ error: 'invalid or expired code', code: 'invalid_code' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    const auth = useAuthStore()
+    const result = await auth.loginWithOAuthCode('stale')
+
+    expect(result).toEqual({ ok: false, error: 'invalid or expired code', code: 'invalid_code' })
+    expect(auth.isLoggedIn).toBe(false)
+  })
+})

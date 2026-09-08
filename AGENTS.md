@@ -1,103 +1,109 @@
-# Immich Swipe (Repo-Notizen für Agenten)
+# Immich Swipe (Repo Notes for Agents)
 
-## Kurzüberblick
-- Single-Page-App (Vue 3 + TypeScript + Tailwind) zum Durchsehen von Immich-Fotos: rechts = behalten, links = (in den Papierkorb) löschen.
-- Go-Backend (`server/main.go`): statische SPA + Session-Auth + Reverse-Proxy zu Immich.
-- State-Management über Pinia (`src/stores/*`), Routing über `vue-router` (`src/router/index.ts`).
+## Overview
+- Single-page app (Vue 3 + TypeScript + Tailwind) for reviewing Immich photos: right = keep, left = delete (to trash).
+- Go backend (`server/main.go`): static SPA + session auth + reverse proxy to Immich.
+- State management via Pinia (`src/stores/*`), routing via `vue-router` (`src/router/index.ts`).
 
-## Quickstart (lokal)
-- Voraussetzungen: Node.js (Docker nutzt `node:20-alpine`), npm, Go für Backend-Tests.
+## Quickstart (local)
+- Prerequisites: Node.js (Docker uses `node:20-alpine`), npm, Go for backend tests.
 - Install: `npm install`
-- Dev-Server: `npm run dev` (Vite, Port `5173`, `host: true`)
-- Backend: `cd server && go run .` (Default `:8080`)
+- Dev server: `npm run dev` (Vite, port `5173`, `host: true`)
+- Backend: `cd server && go run .` (default `:8080`)
 - Build: `npm run build`
 - Preview: `npm run preview`
 - Typecheck: `npm run type-check`
 
-## Konfiguration (.env / Login-Flow)
-- Runtime-Env (Go-Backend, siehe `env.example` / `README.md`):
-  - `IMMICH_SERVER_URL` (Default-Immich-URL)
-  - `IMMICH_API_KEY_<N>_NAME` / `IMMICH_API_KEY_<N>_KEY` (optional; Auto-Login / User-Picker)
-  - Legacy-Fallback: `IMMICH_USER_<N>_NAME` / `IMMICH_USER_<N>_API_KEY`
-  - `IMMICH_SESSIONS_DB` (optional): Pfad zu einer SQLite-Datei; persistiert Swipe-Sessions (Token + API-Key/Access-Token) **und lokale Account-Passwörter (PBKDF2-gehasht)** über Server-Neustarts hinweg. Leer = nur In-Memory (Login nach jedem Neustart nötig). Datei enthält Immich-Credentials im Klartext → wie Secrets behandeln. Siehe `server/main.go` `SessionStore` (write-through, Startup-Restore + Expired-Purge, Cleanup löscht auch DB-Zeilen) und `server/accounts.go` `AccountStore`.
-- Lokale Swipe-Accounts (`server/accounts.go`): jeder Eingeloggte kann in den Settings (Account password) ein Passwort setzen → `POST /api/auth/account` (nur apiKey-Sessions; accessToken-Sessions → 400 `unsupported_mode`; Passwort ≥8 Zeichen; Änderung verlangt `currentPassword`). `NewAccountStore(db, envUsers, defaultServerURL)` migriert Env-User automatisch (INSERT ... ON CONFLICT DO UPDATE SET api_key — überschreibt NIE gesetzte Passwörter). Hashing: `pbkdf2$<iter>$<saltHex>$<keyHex>` (600000 Iterationen, 16B Salt, SHA-256, constant-time Vergleich).
-- Verhalten:
-  - Kein aktives Session → **immer** `/login` (bewusst KEIN Auto-Login, auch bei genau 1 Env-User); die Login-Seite zeigt konfigurierte Env-User als One-Click-Buttons + manuelle Tabs
-  - `/select-user` existiert nicht mehr (Route redirectet auf `/`; nicht eingeloggte Besucher fängt der Guard auf `/login` ab)
-  - Login-Seite Tabs: **Swipe account** (userName/password), **Immich account** (email/password), **API key**, **Create account** (userName + password + API key in einem Schritt)
-  - Hat ein Env-User ein Account-Passwort gesetzt: One-Click-Picker leitet auf den Swipe-Tab um und befüllt ihn vor (gesteuert über `authStore.pendingPasswordUser`, NICHT über URL-Query — vue-router 5.2.0 wirft Query bei Redirects auf denselben Pfad weg)
-- Login-API `POST /api/auth/login` Body-Varianten (mutually exclusive):
-  - `{ "userName" }` → Env-API-Key-Session (401 `password_required`, wenn der Account ein Passwort hat)
-  - `{ "userName", "password", "serverUrl?" }` → lokaler Account-Login (401-Codes: `unknown_user` / `password_not_set` / `invalid_password`; nutzt die gebundene Immich-API-Key)
-  - `{ "userName", "password", "apiKey", "serverUrl?" }` → Account-Erstellung (400 `weak_password` bei <8 Zeichen; 400 `account_exists` wenn der Name schon ein Passwort hat; 401 `invalid_api_key` bei ungültigem/ fremdem Key — migrierte Env-User nur mit exakt ihrer gebundenen Key claimbar; legt den Account an und loggt ein)
-  - `{ "apiKey", "serverUrl?" }` → manuelle API-Key-Session
-  - `{ "email", "password", "serverUrl?" }` → Immich Password-Login → Access-Token-Session
-  - Alle Erfolgsantworten enthalten `mode` (`apiKey` | `accessToken`); Fehlerantworten optional `code`
-- Session-Modi (server-side only):
-  - `apiKey`: Proxy setzt `x-api-key`
-  - `accessToken`: Proxy setzt `Authorization: Bearer <immich-access-token>`
-  - Browser-`Authorization` (Swipe-Session) wird vor Upstream immer gestrippt
-- Wichtige lokale Storage Keys:
-  - Auth: `immich-swipe-sessions` (localStorage: Array `{token, userName, serverUrl}` aller eingeloggten Personen; **keine** Immich-Secrets) + `immich-swipe-active-session` (Aktive Person, Key `serverUrl|userName`); Legacy `immich-swipe-session` (sessionStorage) wird beim ersten Laden migriert
+## Configuration (.env / Login Flow)
+- Runtime env (Go backend, see `env.example` / `README.md`):
+  - `IMMICH_SERVER_URL` (default Immich URL)
+  - `IMMICH_API_KEY_<N>_NAME` / `IMMICH_API_KEY_<N>_KEY` (optional; auto-login / user picker)
+  - Legacy fallback: `IMMICH_USER_<N>_NAME` / `IMMICH_USER_<N>_API_KEY`
+  - `IMMICH_SESSIONS_DB` (optional): path to a SQLite file; persists swipe sessions (token + API key/access token) **and local account passwords (PBKDF2-hashed)** across server restarts. Empty = in-memory only (login required after every restart). File contains Immich credentials in plain text → treat like secrets. See `server/main.go` `SessionStore` (write-through, startup restore + expired purge, cleanup also deletes DB rows) and `server/accounts.go` `AccountStore`.
+  - `SWIPE_PUBLIC_URL` (optional): external base URL for the OAuth callback `redirectUri` (`/api/auth/oauth/callback`); empty = derived from the request (with `X-Forwarded-Proto`/`X-Forwarded-Host`).
+- Local swipe accounts (`server/accounts.go`): anyone logged in can set a password in Settings (Account password) → `POST /api/auth/account` (apiKey sessions only; accessToken sessions → 400 `unsupported_mode`; password ≥8 chars; changing requires `currentPassword`). `NewAccountStore(db, envUsers, defaultServerURL)` auto-migrates env users (INSERT ... ON CONFLICT DO UPDATE SET api_key — NEVER overwrites passwords that were set). Hashing: `pbkdf2$<iter>$<saltHex>$<keyHex>` (600000 iterations, 16B salt, SHA-256, constant-time comparison).
+- Behavior:
+  - No active session → **always** `/login` (deliberately NO auto-login, even with exactly 1 env user); the login page shows configured env users as one-click buttons + manual tabs
+  - `/select-user` no longer exists (route redirects to `/`; unauthenticated visitors are caught by the guard on `/login`)
+  - Login page tabs: **Swipe account** (userName/password), **Immich account** (email/password), **API key**, **Create account** (userName + password + API key in one step); **SSO button** (only when Immich has OAuth enabled — `GET /api/auth/config` returns `oauthEnabled`/`oauthButtonText` from Immich `GET /public/config`)
+  - If an env user has an account password set: the one-click picker redirects to the Swipe tab and prefills it (driven by `authStore.pendingPasswordUser`, NOT via URL query — vue-router 5.2.0 drops query on same-path redirects)
+- Login API `POST /api/auth/login` body variants (mutually exclusive):
+  - `{ "userName" }` → env API-key session (401 `password_required` when the account has a password)
+  - `{ "userName", "password", "serverUrl?" }` → local account login (401 codes: `unknown_user` / `password_not_set` / `invalid_password`; uses the bound Immich API key)
+  - `{ "userName", "password", "apiKey", "serverUrl?" }` → account creation (400 `weak_password` below 8 chars; 400 `account_exists` when the name already has a password; 401 `invalid_api_key` for invalid/foreign keys — migrated env users only claimable with their exactly bound key; creates the account and logs in)
+  - `{ "apiKey", "serverUrl?" }` → manual API-key session
+  - `{ "email", "password", "serverUrl?" }` → Immich password login → access-token session
+  - SSO login (Immich-native, no IdP contact from swipe): `POST /api/auth/oauth/start { serverUrl? }` → `{ url, state }` (backend calls Immich `POST /api/oauth/authorize` with state + PKCE-S256; 400 `oauth_not_enabled` when Immich OAuth is off) → browser full-redirect to the IdP URL → IdP calls `GET /api/auth/oauth/callback?code&state` (must be whitelisted as redirect URI in the IdP) → backend calls Immich `POST /api/oauth/callback { url, state, codeVerifier }` + `GET /users/me` validation + `CreateAccessToken` → 302 `/login?oauthCode=<one-time-code>` → `POST /api/auth/oauth/finish { code }` → `{ token, userName, serverUrl, mode: "accessToken" }` (400 `invalid_code` for unknown/used/expired). Pending state (10 min) + handoff codes (5 min, single-use) are in-memory in `Server.oauthPending`/`oauthCodes`.
+  - All success responses contain `mode` (`apiKey` | `accessToken`); error responses optionally `code`
+- Session modes (server-side only):
+  - `apiKey`: proxy sets `x-api-key`
+  - `accessToken`: proxy sets `Authorization: Bearer <immich-access-token>`
+  - Browser `Authorization` (swipe session) is always stripped before upstream
+- Important local storage keys:
+  - Auth: `immich-swipe-sessions` (localStorage: array `{token, userName, serverUrl}` of all logged-in people; **no** Immich secrets) + `immich-swipe-active-session` (active person, key `serverUrl|userName`); legacy `immich-swipe-session` (sessionStorage) is migrated on first load
   - UI: `immich-swipe-theme`, `immich-swipe-skip-videos`
-  - Stats: `immich-swipe-stats:<server>:<user>` (keep/delete Counter)
-  - Review-Cache: `immich-swipe-reviewed:<server>:<user>` (bereits gesehene IDs + keep/delete)
-  - Preferences: `immich-swipe-preferences:<server>:<user>` (Reihenfolge, Album-Hotkeys, Scope, Person)
-- **Multi-Person-Sessions**: mehrere Personen können gleichzeitig eingeloggt sein; Header-Switcher (User-Badge) wechselt aktiv; „Add person“ → `/login` ohne andere Sessions zu verlieren; Logout entfernt nur die eine Person und fällt auf die nächste zurück; 401 entfernt nur die tote Session (`removeActiveSession`). Alle pro-User-Stores (ui/preferences/reviewed/observability) hängen an `authStore.immichServerUrl`/`currentUserName` (Computed aus aktiver Session) und laden beim Wechsel neu.
-- Credential-Login braucht Immich Password-Login enabled; OAuth/SSO out of scope. Account-Passwörter sind rein lokal (Swipe-eigene Auth, kein Immich-Kontakt beim Passwort-Check).
+  - Stats: `immich-swipe-stats:<server>:<user>` (keep/delete counters)
+  - Review cache: `immich-swipe-reviewed:<server>:<user>` (already seen IDs + keep/delete)
+  - Preferences: `immich-swipe-preferences:<server>:<user>` (ordering, album hotkeys, scope, person)
+- **Multi-person sessions**: multiple people can be logged in simultaneously; header switcher (user badge) changes the active one; "Add person" → `/login` without losing other sessions; logout removes only that one person and falls back to the next; 401 removes only the dead session (`removeActiveSession`). All per-user stores (ui/preferences/reviewed/observability) hang off `authStore.immichServerUrl`/`currentUserName` (computed from the active session) and reload on switch.
+- Credential login needs Immich password login enabled; SSO sessions are `accessToken` sessions (proxy/logout/multi-person unchanged, `POST /api/auth/account` → `unsupported_mode`). Account passwords are purely local (swipe's own auth, no Immich contact during password checks).
 
 ## API/Proxy
-- Frontend ruft nur das Go-Backend unter `/api/...` auf mit `Authorization: Bearer <swipe-session>`.
-- `src/composables/useImmich.ts` → `apiRequest()` nutzt relative `/api` + `authStore.authHeader`.
-- Proxy-Director: strip client auth headers, dann mode-spezifische Immich-Credentials anhängen.
-- Logout: `POST /api/auth/logout` löscht Swipe-Session; bei Access-Token-Mode best-effort Immich logout.
+- Frontend only calls the Go backend under `/api/...` with `Authorization: Bearer <swipe-session>`.
+- `src/composables/useImmich.ts` → `apiRequest()` uses relative `/api` + `authStore.authHeader`.
+- Proxy director: strip client auth headers, then attach mode-specific Immich credentials.
+- Logout: `POST /api/auth/logout` deletes the swipe session; best-effort Immich logout in access-token mode.
 
-## Immich API (Erkenntnisse / relevante Endpoints)
-- Proxied Requests: je nach Session `x-api-key` **oder** Immich Bearer (nie beides mit Swipe-Token).
+## Immich API (Findings / Relevant Endpoints)
+- Proxied requests: per session `x-api-key` **or** Immich Bearer (never both with a swipe token).
 - Auth login: `POST /auth/login` `{ email, password }` → `accessToken`, `name`, `userEmail`, `userId`
-- Connection-Check: `GET /users/me`
-- Random Asset: `GET /assets/random?count=<n>`
-- Chronologisch: `POST /search/metadata` (Body u.a. `take`, `size`, `skip`, `order`, `assetType`)
+- OAuth/SSO (all under the `/api` prefix, public, no auth needed):
+  - Availability: `GET /public/config` → `oauth { enabled, buttonText }`
+  - Start: `POST /oauth/authorize` `{ redirectUri, state?, codeChallenge? }` → `{ url }` (+ `immich_oauth_state`/`immich_oauth_code_verifier` cookies; state/verifier alternatively in the callback body)
+  - Finish: `POST /oauth/callback` `{ url, state?, codeVerifier? }` → `LoginResponseDto` (like password login)
+- Connection check: `GET /users/me`
+- Random asset: `GET /assets/random?count=<n>`
+- Chronological: `POST /search/metadata` (body incl. `take`, `size`, `skip`, `order`, `assetType`)
 - Albums:
   - `GET /albums`
-  - Asset in Album: `PUT /albums/<albumId>/assets` mit Body `{ "ids": ["<assetId>"] }`
-- Papierkorb:
-  - Löschen (Trash): `DELETE /assets` mit Body `{ "ids": ["<assetId>"], "force": false }`
-  - Restore: `POST /trash/restore/assets` mit Body `{ "ids": ["<assetId>"] }`
-- Favoriten:
-  - Toggle/Set: `PUT /assets/<assetId>` mit Body `{ "isFavorite": true|false }` (Antwort wird in der App nicht benötigt; `currentAsset.isFavorite` wird lokal aktualisiert)
-  - Optional (Bulk): `PUT /assets` mit Body `{ "ids": ["..."], "isFavorite": true|false }`
-- Asset Media:
+  - Asset into album: `PUT /albums/<albumId>/assets` with body `{ "ids": ["<assetId>"] }`
+- Trash:
+  - Delete (trash): `DELETE /assets` with body `{ "ids": ["<assetId>"], "force": false }`
+  - Restore: `POST /trash/restore/assets` with body `{ "ids": ["<assetId>"] }`
+- Favorites:
+  - Toggle/set: `PUT /assets/<assetId>` with body `{ "isFavorite": true|false }` (response not needed by the app; `currentAsset.isFavorite` is updated locally)
+  - Optional (bulk): `PUT /assets` with body `{ "ids": ["..."], "isFavorite": true|false }`
+- Asset media:
   - Thumbnail: `GET /assets/<assetId>/thumbnail?size=preview|thumbnail`
   - Original: `GET /assets/<assetId>/original`
 
 ## Docker/Deployment
-- `docker-compose.yml` baut das Image und veröffentlicht Port `2293:80`.
-- Die `.env` Werte werden als **Build-Args** in den Build gebacken (siehe `Dockerfile` + `docker-compose.yml`).
-  - Änderung der `.env` in Production erfordert Rebuild/Recreate des Containers.
-- Runtime-Server ist Nginx (`nginx:alpine`) und serviert `dist/` + `nginx.conf`.
-- CI/CD: `.github/workflows/publish-ghcr.yml` baut & pushed ein generisches Image nach GHCR (`ghcr.io/<owner>/<repo>`) bei Push auf `main` und Tags `v*` (keine Build-Args/Keys im Workflow → Konfiguration erfolgt dann per manuellem Login/`localStorage`, Auto-Login nur via Custom Build).
+- `docker-compose.yml` builds the image and publishes port `2293:80`.
+- The `.env` values are baked into the build as **build args** (see `Dockerfile` + `docker-compose.yml`).
+  - Changing `.env` in production requires rebuilding/recreating the container.
+- Runtime server is Nginx (`nginx:alpine`) serving `dist/` + `nginx.conf`.
+- CI/CD: `.github/workflows/publish-ghcr.yml` builds & pushes a generic image to GHCR (`ghcr.io/<owner>/<repo>`) on pushes to `main` and tags `v*` (no build args/keys in the workflow → configuration then happens via manual login/`localStorage`, auto-login only via custom build).
 
-## Code-Map (wichtigste Stellen)
+## Code Map (Key Locations)
 - Routing/Auth:
-  - `src/router/index.ts` (Guard: Restore letzte Session bei Reload, kein Auto-Login — nicht eingeloggt → immer `/login`; `/select-user` redirectet auf `/`; `/login` ist auch eingeloggt erreichbar = Add-Person-Flow)
-  - `src/stores/auth.ts` (Multi-Session-Registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithUser`/`loginManual`/`loginWithCredentials`/`loginWithAccount`/`loginWithAccountCreate`/`setAccountPassword`; `sessionToken`/`currentUserName`/`immichServerUrl`/`activeSessionMode`/`pendingPasswordUser` aus aktiver Session)
-  - `src/views/LoginView.vue` (Env-User-Picker + Tabs: Swipe- vs Immich-Account vs API-Key vs Create Account)
-  - `src/components/AppHeader.vue` (Person-Switcher-Dropdown: Liste aller Sessions, aktive Markierung, Sign out pro Person, Add person)
-  - `server/main.go` (Sessions, Login, Proxy, Logout) + `server/accounts.go` (AccountStore, Passwort-Hashing, Env-User-Migration)
-  - Tests: `tests/helpers/seedAuth.ts` (`seedAuthSession`/`seedAuthSessions` — MUSS vor erstem `useAuthStore()` laufen)
-- Immich-Integration:
-  - `src/composables/useImmich.ts` (Random Asset inkl. Skip-Videos Filter, Delete/Restore, Undo zeigt gelöschtes Asset wieder, Preload)
-  - `src/types/immich.ts` (API-Typen)
-- UI/Interaktion:
-  - `src/views/HomeView.vue` (Hauptscreen, Keyboard: ←/→ Keep/Delete, ↑ oder Ctrl/⌘+Z = Undo)
-  - `src/components/SwipeCard.vue` (lädt Thumbnail/Video-Original als Blob mit Headern; Videos als `<video autoplay loop controls>`; Overlay-Button öffnet Asset-Detail in Immich `/photos/<id>`)
-  - `src/components/ActionButtons.vue` (Undo-Button; Keep/Delete Buttons nur Desktop)
-  - `src/composables/useSwipe.ts` (Touch+Mouse Swipe-Erkennung)
+  - `src/router/index.ts` (guard: restore last session on reload, no auto-login — unauthenticated → always `/login`; `/select-user` redirects to `/`; `/login` is reachable while logged in = add-person flow)
+  - `src/stores/auth.ts` (multi-session registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithUser`/`loginManual`/`loginWithCredentials`/`loginWithAccount`/`loginWithAccountCreate`/`startOAuthLogin`/`loginWithOAuthCode`/`setAccountPassword`; `sessionToken`/`currentUserName`/`immichServerUrl`/`activeSessionMode`/`pendingPasswordUser`/`oauthEnabled`/`oauthButtonText` from the active session / config)
+  - `src/views/LoginView.vue` (env user picker + tabs: swipe vs Immich account vs API key vs create account + SSO button when `oauthEnabled` + `oauthCode`/`oauthError` query handling)
+  - `src/components/AppHeader.vue` (person switcher dropdown: list of all sessions, active highlight, sign out per person, add person)
+  - `server/main.go` (sessions, login, proxy, logout, OAuth SSO: `oauthStartHandler`/`oauthCallbackHandler`/`oauthFinishHandler` + `oauthPending`/`oauthCodes`) + `server/accounts.go` (AccountStore, password hashing, env user migration)
+  - Tests: `server/oauth_test.go` (fake Immich for the OAuth flow), `tests/helpers/seedAuth.ts` (`seedAuthSession`/`seedAuthSessions` — MUST run before the first `useAuthStore()`)
+- Immich integration:
+  - `src/composables/useImmich.ts` (random asset incl. skip-videos filter, delete/restore, undo re-shows the deleted asset, preload)
+  - `src/types/immich.ts` (API types)
+- UI/Interaction:
+  - `src/views/HomeView.vue` (main screen, keyboard: ←/→ keep/delete, ↑ or Ctrl/⌘+Z = undo)
+  - `src/components/SwipeCard.vue` (loads thumbnail/video original as blob with headers; videos as `<video autoplay loop controls>`; overlay button opens the asset detail in Immich `/photos/<id>`)
+  - `src/components/ActionButtons.vue` (undo button; keep/delete buttons desktop only)
+  - `src/composables/useSwipe.ts` (touch+mouse swipe detection)
   - `src/stores/ui.ts` + `src/components/LoadingOverlay.vue` + `src/components/ToastNotification.vue`
-  - `src/style.css` (`overflow: hidden`, `viewport-fit` via `100dvh`, Safe-Area Utilities)
+  - `src/style.css` (`overflow: hidden`, `viewport-fit` via `100dvh`, safe-area utilities)
 
-## Konventionen für Änderungen
-- TypeScript ist `strict` + `noUnusedLocals/noUnusedParameters` aktiv (`tsconfig.json`): saubere Imports/Variablen, sonst Build bricht.
-- Beim Hinzufügen neuer `VITE_*` Variablen: `src/vite-env.d.ts`, `env.example` und ggf. `README.md` synchron halten.
-- Neue Immich-Calls bevorzugt in `src/composables/useImmich.ts` ergänzen und intern `apiRequest()` nutzen (Fehlerhandling/Headers konsistent halten).
+## Conventions for Changes
+- TypeScript is `strict` + `noUnusedLocals/noUnusedParameters` (`tsconfig.json`): clean imports/variables, otherwise the build breaks.
+- When adding new `VITE_*` variables: keep `src/vite-env.d.ts`, `env.example` and possibly `README.md` in sync.
+- Prefer adding new Immich calls in `src/composables/useImmich.ts` and use `apiRequest()` internally (keeps error handling/headers consistent).

@@ -85,9 +85,17 @@ IMMICH_API_KEY_1_KEY=your-api-key-here
 
 Behavior:
 - No active session: the **login screen** (`/login`) is always shown — there is no auto-login. Configured users appear there as one-click options.
-- Login screen options: pick a configured user, or sign in with a **Swipe account** (user name + password), an **Immich account** (email/password), an **API key**, or **Create account** (set a user name + password + API key in one step).
+- Login screen options: pick a configured user, or sign in with a **Swipe account** (user name + password), an **Immich account** (email/password), an **API key**, or **Create account** (set a user name + password + API key in one step). When Immich has OAuth enabled, a **Login with SSO** button is shown instead of requiring a password.
+- SSO sessions behave like Immich-account sessions (access-token mode): no local account password can be set for them (`unsupported_mode` in Settings).
 
 Env API keys are optional. Households can skip them and use Immich email/password login instead.
+
+### SSO login (Immich OAuth, optional)
+
+If your Immich server uses OAuth/OIDC sign-in, the login page offers an SSO button (label taken from Immich's OAuth config). The backend drives Immich's OAuth flow and converts the result into a swipe session — no extra configuration on the swipe side, except:
+
+- Add the callback URL to your identity provider's allowed redirect URIs: `https://<your-swipe-host>/api/auth/oauth/callback`.
+- Behind a reverse proxy, the callback URL is derived from the request (honoring `X-Forwarded-Proto`/`X-Forwarded-Host`). If that guesses wrong, set `SWIPE_PUBLIC_URL=https://<your-swipe-host>` explicitly.
 
 ### Local Swipe accounts (optional)
 
@@ -102,6 +110,7 @@ Every person can give their own account a password once logged in: **Settings �
 Optional runtime variables:
 - `TRMNL_STATS_FILE` — path to persist keep/delete counters (see below)
 - `IMMICH_SESSIONS_DB` — path to a SQLite file that persists login sessions across restarts (see [Session persistence](#session-persistence))
+- `SWIPE_PUBLIC_URL` — external base URL of this instance (e.g. `https://swipe.example.com`); only needed for SSO login behind a reverse proxy when the request-derived callback URL is wrong
 
 ### Option D: Trmnl e-ink display (keep/delete stats)
 
