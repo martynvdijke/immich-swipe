@@ -1,3 +1,10 @@
+## [1.10.4](https://github.com/martynvdijke/immich-swipe/compare/v1.10.3...v1.10.4) (2026-09-11)
+
+
+### Bug Fixes
+
+* **otel:** bound metric cardinality and honor per-signal OTLP env ([d23c66f](https://github.com/martynvdijke/immich-swipe/commit/d23c66faa030a4657c12c76abd72c7e3b74330c3))
+
 ## [1.10.3](https://github.com/martynvdijke/immich-swipe/compare/v1.10.2...v1.10.3) (2026-09-11)
 
 ## [1.10.2](https://github.com/martynvdijke/immich-swipe/compare/v1.10.1...v1.10.2) (2026-09-10)
