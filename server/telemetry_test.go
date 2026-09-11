@@ -106,8 +106,52 @@ func TestTelemetry_ServiceNameFromEnv(t *testing.T) {
 	}
 }
 
+func TestTelemetry_SignalProtocolPrecedence(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "")
+	if got := signalProtocol("traces"); got != "http/protobuf" {
+		t.Fatalf("signalProtocol(traces) = %q, want http/protobuf", got)
+	}
+	if got := signalProtocol("metrics"); got != "grpc" {
+		t.Fatalf("signalProtocol(metrics) = %q, want grpc (generic fallback)", got)
+	}
+}
+
+func TestTelemetry_SignalEndpointPrecedence(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://generic:4317")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://traces:4318")
+	if got := signalEndpoint("traces"); got != "http://traces:4318" {
+		t.Fatalf("signalEndpoint(traces) = %q, want signal-specific", got)
+	}
+	if got := signalEndpoint("metrics"); got != "http://generic:4317" {
+		t.Fatalf("signalEndpoint(metrics) = %q, want generic", got)
+	}
+}
+
+func TestTelemetry_NormalizeRoute(t *testing.T) {
+	cases := map[string]string{
+		"/api/assets/550e8400-e29b-41d4-a716-446655440000/thumbnail": "/api/assets/{id}/thumbnail",
+		"/api/assets/550e8400-e29b-41d4-a716-446655440000/original":  "/api/assets/{id}/original",
+		"/api/assets/550e8400-e29b-41d4-a716-446655440000":           "/api/assets/{id}",
+		"/api/albums/abc/assets":                                     "/api/albums/{id}/assets",
+		"/api/albums/abc":                                            "/api/albums/{id}",
+		"/api/people/abc/thumbnail":                                  "/api/people/{id}/thumbnail",
+		"/api/search/metadata":                                       "/api/search/metadata",
+		"/index.html":                                                "/index.html",
+	}
+	for in, want := range cases {
+		if got := normalizeRoute(in); got != want {
+			t.Fatalf("normalizeRoute(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestTelemetry_NoopWithoutEndpoint(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
 	tel := initTelemetry()
 	if tel == nil || !tel.disabled {
 		t.Fatal("expected a disabled (noop) telemetry instance without an OTLP endpoint")
@@ -116,6 +160,18 @@ func TestTelemetry_NoopWithoutEndpoint(t *testing.T) {
 		t.Fatal("disabled instance must still provide a working default transport")
 	}
 	// Must not panic.
+	tel.shutdown(context.Background())
+}
+
+func TestTelemetry_EnabledWithSignalEndpointOnly(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
+	tel := initTelemetry()
+	if tel == nil || tel.disabled {
+		t.Fatal("expected an enabled telemetry instance when only a signal endpoint is set")
+	}
 	tel.shutdown(context.Background())
 }
 

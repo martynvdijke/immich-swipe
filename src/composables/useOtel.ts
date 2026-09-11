@@ -1,5 +1,6 @@
 import { ref, type Ref } from 'vue'
 import { isHttpUrl, normalizeBaseUrl, type OtelSettings } from '@/types/observability'
+import { version as APP_VERSION } from '../../package.json'
 
 /**
  * Browser-side OpenTelemetry integration (traces + stats).
@@ -88,6 +89,7 @@ export async function initOtel(config: OtelSettings): Promise<boolean> {
 
       const resource = resources.resourceFromAttributes({
         [semconv.ATTR_SERVICE_NAME]: SERVICE_NAME,
+        [semconv.ATTR_SERVICE_VERSION]: APP_VERSION,
       })
 
       const traceExporterInst = new traceExporter.OTLPTraceExporter({
@@ -96,11 +98,12 @@ export async function initOtel(config: OtelSettings): Promise<boolean> {
 
       const tracerProvider = new traceWeb.WebTracerProvider({
         resource,
-        sampler: new traceWeb.TraceIdRatioBasedSampler(sampling),
+        sampler: new traceWeb.ParentBasedSampler({
+          root: new traceWeb.TraceIdRatioBasedSampler(sampling),
+        }),
         spanProcessors: [new traceWeb.BatchSpanProcessor(traceExporterInst)],
       })
       tracerProvider.register()
-      api.trace.setGlobalTracerProvider(tracerProvider)
 
       const metricExporter = new metricsExporter.OTLPMetricExporter({
         url: `${endpoint}/v1/metrics`,
@@ -211,10 +214,10 @@ function getCounter(action: string): import('@opentelemetry/api').Counter | null
 export function recordSwipeAction(action: 'kept' | 'deleted' | 'skipped' | 'undo' | 'album_added', attrs?: SwipeActionAttrs): void {
   const counter = getCounter(action)
   if (!counter) return
+  // Keep metric labels low-cardinality: album name lives on the span only.
   const attributes: import('@opentelemetry/api').Attributes = {}
   if (attrs?.assetType) attributes['assetType'] = attrs.assetType
   if (attrs?.personFiltered !== undefined) attributes['personFiltered'] = attrs.personFiltered
-  if (attrs?.albumName) attributes['albumName'] = attrs.albumName
   counter.add(1, attributes)
 }
 

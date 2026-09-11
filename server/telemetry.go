@@ -89,7 +89,7 @@ func (t *measuringTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return resp, err
 }
 
-// otlpProtocol returns the OTLP export protocol from the environment,
+// otlpProtocol returns the generic OTLP export protocol from the environment,
 // defaulting to gRPC as specified by the change design.
 func otlpProtocol() string {
 	p := strings.ToLower(strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")))
@@ -97,6 +97,43 @@ func otlpProtocol() string {
 		return "http/protobuf"
 	}
 	return "grpc"
+}
+
+func parseProtocol(raw string) string {
+	if strings.ToLower(strings.TrimSpace(raw)) == "http/protobuf" {
+		return "http/protobuf"
+	}
+	return "grpc"
+}
+
+// signalProtocol resolves the OTLP export protocol for one signal, honoring the
+// signal-specific OTEL_EXPORTER_OTLP_<SIGNAL>_PROTOCOL override before the
+// generic OTEL_EXPORTER_OTLP_PROTOCOL (per the OTel environment spec).
+func signalProtocol(signal string) string {
+	if raw := os.Getenv("OTEL_EXPORTER_OTLP_" + strings.ToUpper(signal) + "_PROTOCOL"); strings.TrimSpace(raw) != "" {
+		return parseProtocol(raw)
+	}
+	return otlpProtocol()
+}
+
+// signalEndpoint returns the signal-specific OTLP endpoint when set, otherwise
+// the generic OTEL_EXPORTER_OTLP_ENDPOINT. Exporter constructors read the
+// endpoint from the environment themselves; this is only used to decide whether
+// telemetry is configured at all.
+func signalEndpoint(signal string) string {
+	if v := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_" + strings.ToUpper(signal) + "_ENDPOINT")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+}
+
+// serviceName resolves the OTel service.name from the environment, defaulting
+// to immich-swipe.
+func serviceName() string {
+	if name := strings.TrimSpace(os.Getenv("OTEL_SERVICE_NAME")); name != "" {
+		return name
+	}
+	return defaultServiceName
 }
 
 // samplerFromEnv builds an SDK sampler from the standard OTEL_TRACES_SAMPLER
@@ -131,13 +168,12 @@ func samplerFromEnv() sdktrace.Sampler {
 // process/telemetry attributes come from resource.Default(), and the service
 // name defaults to immich-swipe unless OTEL_SERVICE_NAME overrides it.
 func buildResource() *resource.Resource {
-	name := strings.TrimSpace(os.Getenv("OTEL_SERVICE_NAME"))
-	if name == "" {
-		name = defaultServiceName
-	}
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceName(name)),
+		resource.NewWithAttributes(semconv.SchemaURL,
+			semconv.ServiceName(serviceName()),
+			semconv.ServiceVersion(Version),
+		),
 	)
 	if err != nil {
 		return resource.Default()
@@ -152,7 +188,9 @@ func initTelemetry() *telemetry {
 	res := buildResource()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	if strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) == "" {
+	// Telemetry is configured if any signal has an endpoint (generic or
+	// signal-specific). Without any, degrade to a noop instance.
+	if signalEndpoint("traces") == "" && signalEndpoint("metrics") == "" && signalEndpoint("logs") == "" {
 		return &telemetry{
 			disabled:       true,
 			resource:       res,
@@ -163,19 +201,18 @@ func initTelemetry() *telemetry {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	protocol := otlpProtocol()
 
-	traceExporter, err := newTraceExporter(ctx, protocol)
+	traceExporter, err := newTraceExporter(ctx, signalProtocol("traces"))
 	if err != nil {
 		log.Printf("telemetry: trace exporter init failed, disabling traces: %v", err)
 		traceExporter = nil
 	}
-	metricExporter, err := newMetricExporter(ctx, protocol)
+	metricExporter, err := newMetricExporter(ctx, signalProtocol("metrics"))
 	if err != nil {
 		log.Printf("telemetry: metric exporter init failed, disabling metrics: %v", err)
 		metricExporter = nil
 	}
-	logExporter, err := newLogExporter(ctx, protocol)
+	logExporter, err := newLogExporter(ctx, signalProtocol("logs"))
 	if err != nil {
 		log.Printf("telemetry: log exporter init failed, disabling logs: %v", err)
 		logExporter = nil
@@ -214,7 +251,7 @@ func initTelemetry() *telemetry {
 
 	// Wire slog through the OTel log SDK so log records carry trace context.
 	if t.loggerProvider != nil {
-		handler := otelslog.NewHandler(defaultServiceName, otelslog.WithLoggerProvider(t.loggerProvider))
+		handler := otelslog.NewHandler(serviceName(), otelslog.WithLoggerProvider(t.loggerProvider))
 		t.logger = slog.New(handler)
 	} else {
 		t.logger = logger
@@ -222,7 +259,7 @@ func initTelemetry() *telemetry {
 	log.SetOutput(slog.NewLogLogger(t.logger.Handler(), slog.LevelInfo).Writer())
 
 	// Create the shared meter instruments (used by the middleware + transport).
-	meter := otel.Meter(defaultServiceName)
+	meter := otel.Meter(serviceName())
 	t.httpRequestsTotal, _ = meter.Int64Counter("otel_http_requests_total",
 		metric.WithDescription("Total number of HTTP requests handled by the server."))
 	t.httpRequestDuration, _ = meter.Float64Histogram("otel_http_request_duration_seconds",
@@ -230,7 +267,7 @@ func initTelemetry() *telemetry {
 	t.proxyUpstreamDuration, _ = meter.Float64Histogram("otel_proxy_upstream_duration_seconds",
 		metric.WithDescription("Duration of requests forwarded to the upstream Immich server."))
 
-	t.middleware = otelhttp.NewMiddleware(defaultServiceName)
+	t.middleware = otelhttp.NewMiddleware(serviceName())
 	t.proxyTransport = otelhttp.NewTransport(&measuringTransport{
 		base:     http.DefaultTransport,
 		duration: t.proxyUpstreamDuration,
@@ -260,8 +297,32 @@ func newLogExporter(ctx context.Context, protocol string) (sdklog.Exporter, erro
 	return otlploggrpc.New(ctx)
 }
 
+// normalizeRoute collapses path parameters so metric labels stay low-cardinality.
+// Raw Immich object IDs (e.g. /api/assets/<uuid>/thumbnail) would otherwise
+// create one metric series per asset.
+func normalizeRoute(p string) string {
+	switch {
+	case strings.HasPrefix(p, "/api/assets/") && strings.HasSuffix(p, "/thumbnail"):
+		return "/api/assets/{id}/thumbnail"
+	case strings.HasPrefix(p, "/api/assets/") && strings.HasSuffix(p, "/original"):
+		return "/api/assets/{id}/original"
+	case strings.HasPrefix(p, "/api/assets/"):
+		return "/api/assets/{id}"
+	case strings.HasPrefix(p, "/api/albums/") && strings.HasSuffix(p, "/assets"):
+		return "/api/albums/{id}/assets"
+	case strings.HasPrefix(p, "/api/albums/"):
+		return "/api/albums/{id}"
+	case strings.HasPrefix(p, "/api/people/") && strings.HasSuffix(p, "/thumbnail"):
+		return "/api/people/{id}/thumbnail"
+	case strings.HasPrefix(p, "/api/people/"):
+		return "/api/people/{id}"
+	default:
+		return p
+	}
+}
+
 // metricsMiddleware records per-request counters and durations with
-// method/path/status labels. Safe to call only on enabled instances.
+// method/route/status labels. Safe to call only on enabled instances.
 func (t *telemetry) metricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -269,7 +330,7 @@ func (t *telemetry) metricsMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 		attrs := []attribute.KeyValue{
 			attribute.String("http.request.method", r.Method),
-			attribute.String("url.path", r.URL.Path),
+			attribute.String("http.route", normalizeRoute(r.URL.Path)),
 			attribute.Int("http.response.status_code", rec.status),
 		}
 		t.httpRequestsTotal.Add(r.Context(), 1, metric.WithAttributes(attrs...))

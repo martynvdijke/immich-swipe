@@ -18,8 +18,11 @@ const m = vi.hoisted(() => {
     meter,
     tracer,
     TraceIdRatioBasedSampler: vi.fn(),
+    ParentBasedSampler: vi.fn(function (this: Record<string, unknown>) {}),
     WebTracerProvider: vi.fn(function (this: Record<string, unknown>) {
-      this.register = vi.fn()
+      this.register = vi.fn(() => {
+        m.setGlobalTracerProvider(this)
+      })
       this.shutdown = providerShutdown
     }),
     BatchSpanProcessor: vi.fn(),
@@ -34,6 +37,7 @@ const m = vi.hoisted(() => {
     XMLHttpRequestInstrumentation: vi.fn(),
     resourceFromAttributes: vi.fn(() => ({})),
     ATTR_SERVICE_NAME: 'service.name',
+    ATTR_SERVICE_VERSION: 'service.version',
     setGlobalTracerProvider: vi.fn(),
     setGlobalMeterProvider: vi.fn(),
     getTracer: vi.fn(() => tracer),
@@ -58,6 +62,7 @@ vi.mock('@opentelemetry/api', () => ({
 vi.mock('@opentelemetry/sdk-trace-web', () => ({
   WebTracerProvider: m.WebTracerProvider,
   TraceIdRatioBasedSampler: m.TraceIdRatioBasedSampler,
+  ParentBasedSampler: m.ParentBasedSampler,
   BatchSpanProcessor: m.BatchSpanProcessor,
 }))
 vi.mock('@opentelemetry/exporter-trace-otlp-http', () => ({ OTLPTraceExporter: m.OTLPTraceExporter }))
@@ -70,7 +75,10 @@ vi.mock('@opentelemetry/instrumentation', () => ({ registerInstrumentations: m.r
 vi.mock('@opentelemetry/instrumentation-fetch', () => ({ FetchInstrumentation: m.FetchInstrumentation }))
 vi.mock('@opentelemetry/instrumentation-xml-http-request', () => ({ XMLHttpRequestInstrumentation: m.XMLHttpRequestInstrumentation }))
 vi.mock('@opentelemetry/resources', () => ({ resourceFromAttributes: m.resourceFromAttributes }))
-vi.mock('@opentelemetry/semantic-conventions', () => ({ ATTR_SERVICE_NAME: m.ATTR_SERVICE_NAME }))
+vi.mock('@opentelemetry/semantic-conventions', () => ({
+  ATTR_SERVICE_NAME: m.ATTR_SERVICE_NAME,
+  ATTR_SERVICE_VERSION: m.ATTR_SERVICE_VERSION,
+}))
 
 // useOtel keeps module-singleton state; load a fresh module per test.
 async function loadMod() {
