@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/martynvdijke/immich-swipe/compare/v1.10.4...v1.11.0) (2026-09-12)
+
+
+### Features
+
+* **auth:** restrict login to Swipe account or SSO, move API key to account settings ([8f13f34](https://github.com/martynvdijke/immich-swipe/commit/8f13f3416c4e4ce60c774bea2bc30d3a2319ae55))
+
 ## [1.10.4](https://github.com/martynvdijke/immich-swipe/compare/v1.10.3...v1.10.4) (2026-09-11)
 
 
