@@ -429,6 +429,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/api/auth/account":
 		s.authMiddleware(http.HandlerFunc(s.accountHandler)).ServeHTTP(w, r)
 
+	case path == "/api/auth/account/apikey":
+		s.authMiddleware(http.HandlerFunc(s.apiKeyHandler)).ServeHTTP(w, r)
+
 	case path == "/api/trmnl/stats":
 		// Public Trmnl e-ink polling endpoint. Registered before the /api/
 		// proxy catch-all so it is served locally and never proxied to Immich.
@@ -460,15 +463,9 @@ func (s *Server) configHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userNames := make([]string, len(s.config.Users))
-	for i, u := range s.config.Users {
-		userNames[i] = u.Name
-	}
-
 	oauthEnabled, oauthButtonText := s.immichOAuthConfig(s.config.ServerURL)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"users":            userNames,
 		"defaultServerUrl": s.config.ServerURL,
 		"version":          Version,
 		"oauthEnabled":     oauthEnabled,
@@ -517,8 +514,8 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		UserName  string `json:"userName"`
 		APIKey    string `json:"apiKey"`
 		ServerURL string `json:"serverUrl"`
-		Email     string `json:"email"`
 		Password  string `json:"password"`
+		Create    bool   `json:"create"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -526,72 +523,31 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hasUserName := req.UserName != ""
-	hasAPIKey := req.APIKey != ""
-	hasEmail := req.Email != ""
 	hasPassword := req.Password != ""
 
-	// Reject ambiguous combinations
-	if hasEmail && hasAPIKey {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either email/password or apiKey, not both"})
-		return
-	}
-	if hasEmail && hasUserName {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either email/password or userName, not both"})
-		return
-	}
-	if hasAPIKey && hasUserName && !hasPassword {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide either userName or apiKey, not both (or add a password to create an account)"})
-		return
-	}
-	if hasPassword && !hasEmail && !hasUserName {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password requires email or userName"})
-		return
-	}
-	if hasEmail && !hasPassword {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email requires password"})
-		return
-	}
-
-	// 0) Create/claim a local account: userName + password + API key
-	//    → API-key session. New names are created; migrated env users can only
-	//    be claimed with the API key bound to their account.
-	if hasUserName && hasPassword && hasAPIKey {
+	// Only two login methods exist: local Swipe account (userName + password,
+	// optionally creating the account) and Immich OAuth/SSO (separate routes).
+	if req.Create {
+		if !hasUserName || !hasPassword {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "userName and password are required to create an account"})
+			return
+		}
 		s.loginWithAccountCreate(w, req.UserName, req.Password, req.APIKey, req.ServerURL)
 		return
 	}
 
-	// 1) Local account by name + password → API-key session
 	if hasUserName && hasPassword {
 		s.loginWithAccount(w, req.UserName, req.Password, req.ServerURL)
 		return
 	}
 
-	// 2) Env user by name → API-key session
-	if hasUserName {
-		s.loginWithEnvUser(w, req.UserName)
-		return
-	}
-
-	// 3) Manual API key → API-key session
-	if hasAPIKey {
-		s.loginWithAPIKey(w, req.APIKey, req.ServerURL)
-		return
-	}
-
-	// 4) Immich email/password → access-token session
-	if hasEmail {
-		s.loginWithCredentials(w, req.Email, req.Password, req.ServerURL)
-		return
-	}
-
-	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provide userName, apiKey, or email/password"})
+	writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported login method; sign in with a user name and password or use SSO"})
 }
 
 // loginWithAccount authenticates against the local accounts table: the
-// userName/password pair must match an existing account. Migrated env users
-// can only be claimed once a password was set (Settings → Account password);
-// until then auto-login via userName alone keeps working. Never logs the
-// password.
+// userName/password pair must match an existing account. The account's Immich
+// API key is NOT validated here — it may legitimately be empty until the
+// person sets it in Settings. Never logs the password.
 func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, serverURL string) {
 	if serverURL == "" {
 		serverURL = s.config.ServerURL
@@ -615,19 +571,6 @@ func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, ser
 		return
 	}
 
-	valid, name, err := s.validateAPIKey(serverURL, account.APIKey)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
-		return
-	}
-	if !valid {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key"})
-		return
-	}
-	if name != "" {
-		account.UserName = name
-	}
-
 	token := s.session.CreateAPIKey(account.UserName, account.APIKey, serverURL)
 	log.Printf("Login: mode=apiKey user=%q session=%s…", account.UserName, token[:12])
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -635,15 +578,18 @@ func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, ser
 		"userName":  account.UserName,
 		"serverUrl": serverURL,
 		"mode":      "apiKey",
+		"hasApiKey": account.APIKey != "",
 	})
 }
 
 // loginWithAccountCreate creates or claims a local account in one step from
-// the login page: userName + password + Immich API key. Claim rules:
+// the login page: userName + password (+ optional Immich API key). The API key
+// is optional — a new account can be created without one and have it set later
+// in Settings. Claim rules:
 //   - the name already has a password   → reject (password changes live in Settings)
 //   - the name exists without password  → only the API key bound to the account
 //     (e.g. a migrated env user) may claim it; a foreign key is rejected
-//   - the name is new                    → the API key is validated against Immich
+//   - the name is new                    → a provided API key is validated against Immich
 //
 // Never logs the password or the API key.
 func (s *Server) loginWithAccountCreate(w http.ResponseWriter, userName, password, apiKey, serverURL string) {
@@ -675,7 +621,7 @@ func (s *Server) loginWithAccountCreate(w http.ResponseWriter, userName, passwor
 			return
 		}
 		// Migrated env user claiming their own account with the bound key.
-	} else {
+	} else if apiKey != "" {
 		valid, _, err := s.validateAPIKey(serverURL, apiKey)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
@@ -695,137 +641,7 @@ func (s *Server) loginWithAccountCreate(w http.ResponseWriter, userName, passwor
 		"userName":  userName,
 		"serverUrl": serverURL,
 		"mode":      "apiKey",
-	})
-}
-
-func (s *Server) loginWithEnvUser(w http.ResponseWriter, userName string) {
-	// A person who has set an account password must use it: the unauthenticated
-	// userName auto-login is disabled for that account.
-	if s.config.ServerURL != "" && s.accounts.HasPassword(s.config.ServerURL, userName) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "password required", "code": "password_required"})
-		return
-	}
-
-	var apiKey string
-	found := false
-	for _, u := range s.config.Users {
-		if u.Name == userName {
-			apiKey = u.APIKey
-			found = true
-			break
-		}
-	}
-	if !found {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unknown user"})
-		return
-	}
-	serverURL := s.config.ServerURL
-	if serverURL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no server URL configured"})
-		return
-	}
-
-	valid, name, err := s.validateAPIKey(serverURL, apiKey)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
-		return
-	}
-	if !valid {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key"})
-		return
-	}
-	if name != "" {
-		userName = name
-	}
-
-	token := s.session.CreateAPIKey(userName, apiKey, serverURL)
-	log.Printf("Login: mode=apiKey user=%q session=%s…", userName, token[:12])
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"token":     token,
-		"userName":  userName,
-		"serverUrl": serverURL,
-		"mode":      "apiKey",
-	})
-}
-
-func (s *Server) loginWithAPIKey(w http.ResponseWriter, apiKey, serverURL string) {
-	if serverURL == "" {
-		serverURL = s.config.ServerURL
-	}
-	if serverURL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no server URL configured"})
-		return
-	}
-
-	valid, name, err := s.validateAPIKey(serverURL, apiKey)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
-		return
-	}
-	if !valid {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key"})
-		return
-	}
-
-	userName := name
-	if userName == "" {
-		userName = "manual"
-	}
-
-	token := s.session.CreateAPIKey(userName, apiKey, serverURL)
-	log.Printf("Login: mode=apiKey user=%q session=%s…", userName, token[:12])
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"token":     token,
-		"userName":  userName,
-		"serverUrl": serverURL,
-		"mode":      "apiKey",
-	})
-}
-
-func (s *Server) loginWithCredentials(w http.ResponseWriter, email, password, serverURL string) {
-	if serverURL == "" {
-		serverURL = s.config.ServerURL
-	}
-	if serverURL == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no server URL configured"})
-		return
-	}
-
-	loginResult, status, errMsg := s.immichPasswordLogin(serverURL, email, password)
-	if errMsg != "" {
-		writeJSON(w, status, map[string]string{"error": errMsg})
-		return
-	}
-
-	// Validate token works via users/me
-	valid, displayName, err := s.validateAccessToken(serverURL, loginResult.AccessToken)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
-		return
-	}
-	if !valid {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
-		return
-	}
-
-	userName := displayName
-	if userName == "" {
-		userName = loginResult.Name
-	}
-	if userName == "" {
-		userName = loginResult.UserEmail
-	}
-	if userName == "" {
-		userName = email
-	}
-
-	token := s.session.CreateAccessToken(userName, loginResult.AccessToken, serverURL, loginResult.UserEmail, loginResult.UserID)
-	log.Printf("Login: mode=accessToken user=%q session=%s…", userName, token[:12])
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"token":     token,
-		"userName":  userName,
-		"serverUrl": serverURL,
-		"mode":      "accessToken",
+		"hasApiKey": apiKey != "",
 	})
 }
 
@@ -1234,66 +1050,70 @@ func (s *Server) accountHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// apiKeyHandler stores the Immich API key for the authenticated person's local
+// account. API-key sessions only: an access token cannot be re-validated on
+// later account logins. The key is validated against Immich before saving.
+func (s *Server) apiKeyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	session := sessionFromContext(r.Context())
+	if session == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no session"})
+		return
+	}
+	if session.Mode != AuthModeAPIKey {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "API keys are only available for local accounts; SSO sessions use Immich access tokens",
+			"code":  "unsupported_mode",
+		})
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot read request body"})
+		return
+	}
+	defer r.Body.Close()
+
+	var req struct {
+		APIKey string `json:"apiKey"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if req.APIKey == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "API key is required", "code": "invalid_api_key"})
+		return
+	}
+
+	valid, _, err := s.validateAPIKey(session.ServerURL, req.APIKey)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
+		return
+	}
+	if !valid {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key", "code": "invalid_api_key"})
+		return
+	}
+
+	s.accounts.SetAPIKey(session.ServerURL, session.UserName, req.APIKey)
+	session.APIKey = req.APIKey
+	log.Printf("Account: API key set for user=%q server=%q", session.UserName, session.ServerURL)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// immichLoginResponse is the subset of Immich's POST /api/auth/login response
+// that the OAuth callback needs.
 type immichLoginResponse struct {
 	AccessToken string `json:"accessToken"`
 	Name        string `json:"name"`
 	UserEmail   string `json:"userEmail"`
 	UserID      string `json:"userId"`
-}
-
-// immichPasswordLogin calls Immich POST /api/auth/login.
-// Never logs email or password.
-func (s *Server) immichPasswordLogin(serverURL, email, password string) (result immichLoginResponse, status int, errMsg string) {
-	base := strings.TrimRight(serverURL, "/")
-	targetURL := base + "/api/auth/login"
-
-	payload, err := json.Marshal(map[string]string{
-		"email":    email,
-		"password": password,
-	})
-	if err != nil {
-		return result, http.StatusInternalServerError, "internal error"
-	}
-
-	req, err := http.NewRequest("POST", targetURL, strings.NewReader(string(payload)))
-	if err != nil {
-		return result, http.StatusInternalServerError, "internal error"
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return result, http.StatusInternalServerError, "cannot reach Immich server"
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == http.StatusOK {
-		if err := json.Unmarshal(respBody, &result); err != nil || result.AccessToken == "" {
-			return result, http.StatusInternalServerError, "unexpected response from Immich"
-		}
-		return result, http.StatusOK, ""
-	}
-
-	// Map Immich errors without leaking details
-	bodyLower := strings.ToLower(string(respBody))
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		if strings.Contains(bodyLower, "password") && (strings.Contains(bodyLower, "disabled") || strings.Contains(bodyLower, "not enabled") || strings.Contains(bodyLower, "unavailable")) {
-			return result, http.StatusForbidden, "password login is disabled on this Immich server"
-		}
-		return result, http.StatusUnauthorized, "invalid email or password"
-	}
-	if resp.StatusCode == http.StatusBadRequest {
-		if strings.Contains(bodyLower, "password") && (strings.Contains(bodyLower, "disabled") || strings.Contains(bodyLower, "not enabled") || strings.Contains(bodyLower, "unavailable")) {
-			return result, http.StatusForbidden, "password login is disabled on this Immich server"
-		}
-		return result, http.StatusUnauthorized, "invalid email or password"
-	}
-
-	log.Printf("Immich password login failed: status=%d", resp.StatusCode)
-	return result, http.StatusInternalServerError, "cannot reach Immich server"
 }
 
 func (s *Server) validateAPIKey(serverURL, apiKey string) (valid bool, userName string, err error) {
@@ -1539,6 +1359,23 @@ func (s *Server) proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if session == nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no session"})
 		return
+	}
+
+	// Local accounts may exist without an Immich API key (it is set later in
+	// Settings). Refresh the session's key from the account store and refuse to
+	// proxy until one is present, so the frontend can send the person to
+	// Settings. OAuth access-token sessions are unaffected.
+	if session.Mode != AuthModeAccessToken {
+		if account, ok := s.accounts.Get(session.ServerURL, session.UserName); ok && account.APIKey != "" {
+			session.APIKey = account.APIKey
+		}
+		if session.APIKey == "" {
+			writeJSON(w, http.StatusPreconditionRequired, map[string]interface{}{
+				"error": "an Immich API key is required for this account",
+				"code":  "api_key_required",
+			})
+			return
+		}
 	}
 
 	// Inspect countable requests (design D4) and rewind the body so the

@@ -5,10 +5,10 @@ const SESSIONS_STORAGE_KEY = 'immich-swipe-sessions'
 const ACTIVE_SESSION_KEY = 'immich-swipe-active-session'
 const LEGACY_STORAGE_KEY = 'immich-swipe-session'
 
-export type LoginMethod = 'env-user' | 'manual' | 'credentials' | 'account' | 'account-create' | 'oauth'
+export type LoginMethod = 'account' | 'account-create' | 'oauth'
 
 export type LoginResult =
-  | { ok: true; url?: string }
+  | { ok: true; url?: string; needsApiKey?: boolean }
   | { ok: false; error: string; code?: string }
 
 interface SessionRecord {
@@ -39,7 +39,6 @@ export const useAuthStore = defineStore('auth', () => {
   // Identity of the active session; null when nobody is active.
   const activeSessionKey = ref<string | null>(null)
 
-  const envUsers = ref<string[]>([])
   const defaultServerUrl = ref<string | null>(null)
   const serverVersion = ref<string>('')
   /** Immich-native OAuth/SSO availability (from GET /api/auth/config). */
@@ -48,10 +47,6 @@ export const useAuthStore = defineStore('auth', () => {
   // Set by the 401 handler / failed auto-login to prevent the router guard
   // from re-attempting auto-login into an infinite loop.
   const autoLoginBlocked = ref(false)
-  // Set by the router guard when an env user's account has a password:
-  // the login page pre-fills the user name and switches to the Swipe-account
-  // tab. Cleared once the login page consumes it.
-  const pendingPasswordUser = ref<string | null>(null)
 
   const activeSession = computed<SessionRecord | null>(() => {
     if (!activeSessionKey.value) return null
@@ -193,7 +188,6 @@ export const useAuthStore = defineStore('auth', () => {
       const res = await fetch('/api/auth/config')
       if (res.ok) {
         const data = await res.json()
-        envUsers.value = data.users || []
         defaultServerUrl.value = data.defaultServerUrl || null
         serverVersion.value = data.version || ''
         oauthEnabled.value = data.oauthEnabled === true
@@ -244,25 +238,6 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  async function loginWithUser(userName: string): Promise<LoginResult> {
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userName }),
-      })
-      if (!res.ok) {
-        const { error, code } = await parseLoginResult(res, 'Unknown user')
-        return { ok: false, error, code }
-      }
-      const data = await res.json()
-      applyLoginSuccess(data, userName)
-      return { ok: true }
-    } catch {
-      return { ok: false, error: 'Cannot reach server. Please try again.' }
-    }
-  }
-
   /** Local account login: app-local userName + password against the backend
    *  accounts table. */
   async function loginWithAccount(userName: string, password: string, serverUrl: string): Promise<LoginResult> {
@@ -282,7 +257,7 @@ export const useAuthStore = defineStore('auth', () => {
       }
       const data = await res.json()
       applyLoginSuccess(data, userName, serverUrl)
-      return { ok: true }
+      return { ok: true, needsApiKey: data.hasApiKey === false }
     } catch {
       return { ok: false, error: 'Cannot reach server. Please try again.' }
     }
@@ -312,10 +287,11 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  /** One-step account creation from the login page: user name + password +
-   *  Immich API key. The backend validates the key, creates or claims the
-   *  local account (claiming a migrated env user requires the bound key),
-   *  and logs the person in with an API-key session. */
+  /** One-step account creation from the login page: user name + password and
+   *  an optional Immich API key. The backend creates or claims the local
+   *  account (claiming a migrated env user requires the bound key) and logs the
+   *  person in with an API-key session. A blank key leaves the account without
+   *  one until it is set in Settings. */
   async function loginWithAccountCreate(
     userName: string,
     password: string,
@@ -326,7 +302,7 @@ export const useAuthStore = defineStore('auth', () => {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userName, password, apiKey, serverUrl }),
+        body: JSON.stringify({ userName, password, apiKey, serverUrl, create: true }),
       })
       if (!res.ok) {
         const fallback =
@@ -338,47 +314,28 @@ export const useAuthStore = defineStore('auth', () => {
       }
       const data = await res.json()
       applyLoginSuccess(data, userName, serverUrl)
-      return { ok: true }
+      return { ok: true, needsApiKey: data.hasApiKey === false }
     } catch {
       return { ok: false, error: 'Cannot reach server. Please try again.' }
     }
   }
 
-  async function loginManual(apiKey: string, serverUrl: string): Promise<boolean> {
+  /** Store the Immich API key on the active local account (Settings). */
+  async function setApiKey(apiKey: string): Promise<LoginResult> {
     try {
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch('/api/auth/account/apikey', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, serverUrl }),
-      })
-      if (!res.ok) return false
-      const data = await res.json()
-      applyLoginSuccess(data, 'manual', serverUrl)
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  async function loginWithCredentials(email: string, password: string, serverUrl: string): Promise<LoginResult> {
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, serverUrl }),
+        headers: { 'Content-Type': 'application/json', ...authHeader.value },
+        body: JSON.stringify({ apiKey }),
       })
       if (!res.ok) {
         const fallback =
           res.status === 401
-            ? 'Invalid email or password'
-            : res.status === 403
-              ? 'Password login is disabled on this Immich server'
-              : 'Failed to connect. Please check your server URL and credentials.'
-        const { error } = await parseLoginResult(res, fallback)
-        return { ok: false, error }
+            ? 'Invalid API key'
+            : 'Could not save the API key. Please try again.'
+        const { error, code } = await parseLoginResult(res, fallback)
+        return { ok: false, error, code }
       }
-      const data = await res.json()
-      applyLoginSuccess(data, email, serverUrl)
       return { ok: true }
     } catch {
       return { ok: false, error: 'Cannot reach server. Please try again.' }
@@ -507,27 +464,23 @@ export const useAuthStore = defineStore('auth', () => {
     currentUserName,
     immichServerUrl,
     activeSessionMode,
-    envUsers,
     defaultServerUrl,
     serverVersion,
     oauthEnabled,
     oauthButtonText,
     autoLoginBlocked,
-    pendingPasswordUser,
     isLoggedIn,
     authHeader,
     sessions,
     sessionCount,
     activeSessionKey,
     fetchConfig,
-    loginWithUser,
-    loginManual,
-    loginWithCredentials,
     loginWithAccount,
     loginWithAccountCreate,
     startOAuthLogin,
     loginWithOAuthCode,
     setAccountPassword,
+    setApiKey,
     switchTo,
     restoreLastActive,
     logout,

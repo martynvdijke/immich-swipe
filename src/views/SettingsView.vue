@@ -60,6 +60,31 @@ async function saveAccountPassword() {
   }
 }
 
+// ── Immich API key ────────────────────────────────────────────────────────
+const apiKey = ref('')
+const apiKeyError = ref('')
+const apiKeySaving = ref(false)
+const apiKeySaved = ref(false)
+
+async function saveApiKey() {
+  apiKeyError.value = ''
+  if (!apiKey.value.trim()) {
+    apiKeyError.value = 'Please enter your Immich API key'
+    return
+  }
+  apiKeySaving.value = true
+  const result = await authStore.setApiKey(apiKey.value.trim())
+  apiKeySaving.value = false
+  if (result.ok) {
+    apiKeySaved.value = true
+    apiKey.value = ''
+    uiStore.toast('API key saved', 'success', 1500)
+    setTimeout(() => (apiKeySaved.value = false), 2000)
+  } else {
+    apiKeyError.value = result.error
+  }
+}
+
 // Keep draft in sync when the active settings change (e.g. re-login as
 // another user, or initial load that happened after first render).
 watch(
@@ -102,12 +127,11 @@ onBeforeUnmount(() => {
       :class="uiStore.isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'"
     >
       <h2 class="font-semibold" :class="uiStore.isDarkMode ? 'text-white' : 'text-gray-900'">
-        Account password
+        Local account
       </h2>
       <p class="text-xs mt-0.5 mb-4" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-500'">
-        Set a password for <span class="font-medium">{{ authStore.currentUserName }}</span> on
-        {{ authStore.immichServerUrl }}. Once set, logging in with this user name requires the
-        password (instead of the env-configured one-click login).
+        Signed in as <span class="font-medium">{{ authStore.currentUserName }}</span> on
+        {{ authStore.immichServerUrl }}. Change your Swipe account password here.
       </p>
 
       <div class="space-y-4">
@@ -179,6 +203,55 @@ onBeforeUnmount(() => {
           {{ accountSaving ? 'Saving…' : 'Save password' }}
         </button>
         <span v-if="accountSaved" class="text-sm" :class="uiStore.isDarkMode ? 'text-green-400' : 'text-green-600'">
+          Saved ✓
+        </span>
+      </div>
+
+      <!-- Divider -->
+      <div class="my-6 h-px" :class="uiStore.isDarkMode ? 'bg-gray-800' : 'bg-gray-200'"></div>
+
+      <h3 class="font-medium text-sm mb-1" :class="uiStore.isDarkMode ? 'text-white' : 'text-gray-900'">
+        Immich API key
+      </h3>
+      <p class="text-xs mb-3" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-500'">
+        Required to review photos. Stored on the server for this account. If Immich rejects your key you can update it here.
+      </p>
+
+      <div>
+        <label class="block text-sm mb-1" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-700'">
+          API key
+        </label>
+        <input
+          v-model="apiKey"
+          type="password"
+          data-testid="account-api-key"
+          autocomplete="off"
+          placeholder="Your Immich API key"
+          class="w-full px-3 py-2 rounded-lg border text-sm"
+          :class="uiStore.isDarkMode
+            ? 'bg-gray-800 border-gray-700 text-white'
+            : 'bg-gray-50 border-gray-300 text-gray-900'"
+        />
+      </div>
+
+      <p v-if="apiKeyError" class="text-xs text-red-500 mt-3" data-testid="account-api-key-error">
+        {{ apiKeyError }}
+      </p>
+
+      <div class="flex items-center gap-3 mt-4">
+        <button
+          type="button"
+          data-testid="account-api-key-save-btn"
+          @click="saveApiKey"
+          :disabled="apiKeySaving"
+          class="px-4 py-2 rounded-full text-sm font-medium border transition-colors disabled:opacity-40"
+          :class="uiStore.isDarkMode
+            ? 'bg-indigo-600 hover:bg-indigo-500 border-indigo-500 text-white'
+            : 'bg-indigo-600 hover:bg-indigo-500 border-indigo-500 text-white'"
+        >
+          {{ apiKeySaving ? 'Saving…' : 'Save API key' }}
+        </button>
+        <span v-if="apiKeySaved" class="text-sm" :class="uiStore.isDarkMode ? 'text-green-400' : 'text-green-600'">
           Saved ✓
         </span>
       </div>

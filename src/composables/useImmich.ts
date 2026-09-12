@@ -141,6 +141,14 @@ export function useImmich() {
       throw new Error('Session expired')
     }
 
+    if (response.status === 428) {
+      // Local account without an Immich API key yet: send the person to
+      // Settings without touching the session (it is still valid).
+      uiStore.toast('Set your Immich API key in Settings to continue', 'info')
+      router.push('/settings')
+      throw new Error('Immich API key required')
+    }
+
     if (!response.ok) {
       const errorText = await response.text()
       let errorMessage: string

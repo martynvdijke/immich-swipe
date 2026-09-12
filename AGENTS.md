@@ -17,24 +17,22 @@
 ## Configuration (.env / Login Flow)
 - Runtime env (Go backend, see `env.example` / `README.md`):
   - `IMMICH_SERVER_URL` (default Immich URL)
-  - `IMMICH_API_KEY_<N>_NAME` / `IMMICH_API_KEY_<N>_KEY` (optional; auto-login / user picker)
+  - `IMMICH_API_KEY_<N>_NAME` / `IMMICH_API_KEY_<N>_KEY` (optional; auto-migrated into local accounts at startup — NOT a login path anymore)
   - Legacy fallback: `IMMICH_USER_<N>_NAME` / `IMMICH_USER_<N>_API_KEY`
   - `IMMICH_SESSIONS_DB` (optional): path to a SQLite file; persists swipe sessions (token + API key/access token) **and local account passwords (PBKDF2-hashed)** across server restarts. Empty = in-memory only (login required after every restart). File contains Immich credentials in plain text → treat like secrets. See `server/main.go` `SessionStore` (write-through, startup restore + expired purge, cleanup also deletes DB rows) and `server/accounts.go` `AccountStore`.
   - `SWIPE_PUBLIC_URL` (optional): external base URL for the OAuth callback `redirectUri` (`/api/auth/oauth/callback`); empty = derived from the request (with `X-Forwarded-Proto`/`X-Forwarded-Host`).
-- Local swipe accounts (`server/accounts.go`): anyone logged in can set a password in Settings (Account password) → `POST /api/auth/account` (apiKey sessions only; accessToken sessions → 400 `unsupported_mode`; password ≥8 chars; changing requires `currentPassword`). `NewAccountStore(db, envUsers, defaultServerURL)` auto-migrates env users (INSERT ... ON CONFLICT DO UPDATE SET api_key — NEVER overwrites passwords that were set). Hashing: `pbkdf2$<iter>$<saltHex>$<keyHex>` (600000 iterations, 16B salt, SHA-256, constant-time comparison).
+- Local swipe accounts (`server/accounts.go`): anyone logged in can change their account password in Settings → `POST /api/auth/account` (apiKey sessions only; accessToken sessions → 400 `unsupported_mode`; password ≥8 chars; changing requires `currentPassword`) and set/replace the account's Immich API key → `POST /api/auth/account/apikey` (apiKey sessions only; 401 `invalid_api_key` if Immich rejects it). `SetPassword` preserves the existing API key when passed an empty one; `SetAPIKey(serverURL,userName,apiKey)` updates it. `NewAccountStore(db, envUsers, defaultServerURL)` auto-migrates env users (INSERT ... ON CONFLICT DO UPDATE SET api_key — NEVER overwrites passwords that were set). Hashing: `pbkdf2$<iter>$<saltHex>$<keyHex>` (600000 iterations, 16B salt, SHA-256, constant-time comparison).
 - Behavior:
-  - No active session → **always** `/login` (deliberately NO auto-login, even with exactly 1 env user); the login page shows configured env users as one-click buttons + manual tabs
+  - No active session → **always** `/login` (deliberately NO auto-login, even with exactly 1 env user); the login page has no env-user picker
   - `/select-user` no longer exists (route redirects to `/`; unauthenticated visitors are caught by the guard on `/login`)
-  - Login page tabs: **Swipe account** (userName/password), **Immich account** (email/password), **API key**, **Create account** (userName + password + API key in one step); **SSO button** (only when Immich has OAuth enabled — `GET /api/auth/config` returns `oauthEnabled`/`oauthButtonText` from Immich `GET /public/config`)
-  - If an env user has an account password set: the one-click picker redirects to the Swipe tab and prefills it (driven by `authStore.pendingPasswordUser`, NOT via URL query — vue-router 5.2.0 drops query on same-path redirects)
-- Login API `POST /api/auth/login` body variants (mutually exclusive):
-  - `{ "userName" }` → env API-key session (401 `password_required` when the account has a password)
-  - `{ "userName", "password", "serverUrl?" }` → local account login (401 codes: `unknown_user` / `password_not_set` / `invalid_password`; uses the bound Immich API key)
-  - `{ "userName", "password", "apiKey", "serverUrl?" }` → account creation (400 `weak_password` below 8 chars; 400 `account_exists` when the name already has a password; 401 `invalid_api_key` for invalid/foreign keys — migrated env users only claimable with their exactly bound key; creates the account and logs in)
-  - `{ "apiKey", "serverUrl?" }` → manual API-key session
-  - `{ "email", "password", "serverUrl?" }` → Immich password login → access-token session
+  - Login page tabs: **Sign in** (userName/password, default) and **Create account** (userName + password ≥8; the Immich API key is optional here and can be added later in Settings); **SSO button** (only when Immich has OAuth enabled — `GET /api/auth/config` returns `oauthEnabled`/`oauthButtonText` from Immich `GET /public/config`)
+  - After a successful login/create, if the account has no Immich API key (`needsApiKey`) the app toasts and routes to `/settings`; API-key mode requests return HTTP 428 `api_key_required` until the key is set
+- Login API `POST /api/auth/login` body variants (only these two are accepted):
+  - `{ "userName", "password", "serverUrl?" }` → local account sign-in (401 codes: `unknown_user` / `password_not_set` / `invalid_password`; does NOT contact Immich or validate the bound API key)
+  - `{ "userName", "password", "create": true, "apiKey?", "serverUrl?" }` → account creation (400 `weak_password` below 8 chars; 400 `account_exists` when the name already has a password; 401 `invalid_api_key` for a provided key Immich rejects, and for claiming a password-less migrated account with a non-matching key; a blank `apiKey` creates the account with no key)
+  - Any other shape (email/password, apiKey-only, userName-only) → 400 unsupported login method
   - SSO login (Immich-native, no IdP contact from swipe): `POST /api/auth/oauth/start { serverUrl? }` → `{ url, state }` (backend calls Immich `POST /api/oauth/authorize` with state + PKCE-S256; 400 `oauth_not_enabled` when Immich OAuth is off) → browser full-redirect to the IdP URL → IdP calls `GET /api/auth/oauth/callback?code&state` (must be whitelisted as redirect URI in the IdP) → backend calls Immich `POST /api/oauth/callback { url, state, codeVerifier }` + `GET /users/me` validation + `CreateAccessToken` → 302 `/login?oauthCode=<one-time-code>` → `POST /api/auth/oauth/finish { code }` → `{ token, userName, serverUrl, mode: "accessToken" }` (400 `invalid_code` for unknown/used/expired). Pending state (10 min) + handoff codes (5 min, single-use) are in-memory in `Server.oauthPending`/`oauthCodes`.
-  - All success responses contain `mode` (`apiKey` | `accessToken`); error responses optionally `code`
+  - Account sign-in/create success responses: `{ token, userName, serverUrl, mode: "apiKey", hasApiKey }`; error responses optionally `code`
 - Session modes (server-side only):
   - `apiKey`: proxy sets `x-api-key`
   - `accessToken`: proxy sets `Authorization: Bearer <immich-access-token>`
@@ -46,7 +44,7 @@
   - Review cache: `immich-swipe-reviewed:<server>:<user>` (already seen IDs + keep/delete)
   - Preferences: `immich-swipe-preferences:<server>:<user>` (ordering, album hotkeys, scope, person)
 - **Multi-person sessions**: multiple people can be logged in simultaneously; header switcher (user badge) changes the active one; "Add person" → `/login` without losing other sessions; logout removes only that one person and falls back to the next; 401 removes only the dead session (`removeActiveSession`). All per-user stores (ui/preferences/reviewed/observability) hang off `authStore.immichServerUrl`/`currentUserName` (computed from the active session) and reload on switch.
-- Credential login needs Immich password login enabled; SSO sessions are `accessToken` sessions (proxy/logout/multi-person unchanged, `POST /api/auth/account` → `unsupported_mode`). Account passwords are purely local (swipe's own auth, no Immich contact during password checks).
+- Credential login needs Immich password login enabled; SSO sessions are `accessToken` sessions (proxy/logout/multi-person unchanged, `POST /api/auth/account` and `POST /api/auth/account/apikey` → `unsupported_mode`, since the API key is only meaningful in API-key mode). Account passwords are purely local (swipe's own auth, no Immich contact during password checks).
 
 ## API/Proxy
 - Frontend only calls the Go backend under `/api/...` with `Authorization: Bearer <swipe-session>`.
@@ -56,7 +54,6 @@
 
 ## Immich API (Findings / Relevant Endpoints)
 - Proxied requests: per session `x-api-key` **or** Immich Bearer (never both with a swipe token).
-- Auth login: `POST /auth/login` `{ email, password }` → `accessToken`, `name`, `userEmail`, `userId`
 - OAuth/SSO (all under the `/api` prefix, public, no auth needed):
   - Availability: `GET /public/config` → `oauth { enabled, buttonText }`
   - Start: `POST /oauth/authorize` `{ redirectUri, state?, codeChallenge? }` → `{ url }` (+ `immich_oauth_state`/`immich_oauth_code_verifier` cookies; state/verifier alternatively in the callback body)
@@ -87,8 +84,8 @@
 ## Code Map (Key Locations)
 - Routing/Auth:
   - `src/router/index.ts` (guard: restore last session on reload, no auto-login — unauthenticated → always `/login`; `/select-user` redirects to `/`; `/login` is reachable while logged in = add-person flow)
-  - `src/stores/auth.ts` (multi-session registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithUser`/`loginManual`/`loginWithCredentials`/`loginWithAccount`/`loginWithAccountCreate`/`startOAuthLogin`/`loginWithOAuthCode`/`setAccountPassword`; `sessionToken`/`currentUserName`/`immichServerUrl`/`activeSessionMode`/`pendingPasswordUser`/`oauthEnabled`/`oauthButtonText` from the active session / config)
-  - `src/views/LoginView.vue` (env user picker + tabs: swipe vs Immich account vs API key vs create account + SSO button when `oauthEnabled` + `oauthCode`/`oauthError` query handling)
+  - `src/stores/auth.ts` (multi-session registry in localStorage, `switchTo`/`restoreLastActive`/`logout`/`logoutSession`/`removeActiveSession`, `loginWithAccount`/`loginWithAccountCreate`/`setApiKey`/`startOAuthLogin`/`loginWithOAuthCode`/`setAccountPassword`; `sessionToken`/`currentUserName`/`immichServerUrl`/`activeSessionMode`/`oauthEnabled`/`oauthButtonText` from the active session / config)
+  - `src/views/LoginView.vue` (tabs: Sign in vs Create account, optional Immich API key on create + SSO button when `oauthEnabled` + `oauthCode`/`oauthError` query handling; no env-user picker)
   - `src/components/AppHeader.vue` (person switcher dropdown: list of all sessions, active highlight, sign out per person, add person)
   - `server/main.go` (sessions, login, proxy, logout, OAuth SSO: `oauthStartHandler`/`oauthCallbackHandler`/`oauthFinishHandler` + `oauthPending`/`oauthCodes`) + `server/accounts.go` (AccountStore, password hashing, env user migration)
   - Tests: `server/oauth_test.go` (fake Immich for the OAuth flow), `tests/helpers/seedAuth.ts` (`seedAuthSession`/`seedAuthSessions` — MUST run before the first `useAuthStore()`)

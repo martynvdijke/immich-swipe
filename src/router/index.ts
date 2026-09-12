@@ -52,10 +52,10 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
-  // Not logged in -> the login page is the landing point. It shows the
-  // configured users as one-click options and the manual login/account
-  // creation forms. There is deliberately no auto-login: a fresh visit
-  // always presents the login screen, even with a single env user.
+  // Not logged in -> the login page is the landing point. It offers the
+  // Swipe account sign-in / create-account forms plus SSO. There is
+  // deliberately no auto-login: a fresh visit always presents the login
+  // screen, even with a single env user.
   try {
     await authStore.fetchConfig()
   } catch {

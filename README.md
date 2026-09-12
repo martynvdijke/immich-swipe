@@ -84,11 +84,11 @@ IMMICH_API_KEY_1_KEY=your-api-key-here
 ```
 
 Behavior:
-- No active session: the **login screen** (`/login`) is always shown — there is no auto-login. Configured users appear there as one-click options.
-- Login screen options: pick a configured user, or sign in with a **Swipe account** (user name + password), an **Immich account** (email/password), an **API key**, or **Create account** (set a user name + password + API key in one step). When Immich has OAuth enabled, a **Login with SSO** button is shown instead of requiring a password.
-- SSO sessions behave like Immich-account sessions (access-token mode): no local account password can be set for them (`unsupported_mode` in Settings).
+- No active session: the **login screen** (`/login`) is always shown — there is no auto-login.
+- Login screen has two tabs: **Sign in** with a **Swipe account** (user name + password), or **Create account** (user name + password; the Immich API key is optional and can be added later in Settings). When Immich has OAuth enabled, a **Login with SSO** button is shown.
+- SSO sessions use access-token mode: no local account password or API key can be set for them (`unsupported_mode` in Settings).
 
-Env API keys are optional. Households can skip them and use Immich email/password login instead.
+Env API keys are still used to auto-migrate configured users into local accounts at startup, but they are no longer a separate login path.
 
 ### SSO login (Immich OAuth, optional)
 
@@ -97,15 +97,15 @@ If your Immich server uses OAuth/OIDC sign-in, the login page offers an SSO butt
 - Add the callback URL to your identity provider's allowed redirect URIs: `https://<your-swipe-host>/api/auth/oauth/callback`.
 - Behind a reverse proxy, the callback URL is derived from the request (honoring `X-Forwarded-Proto`/`X-Forwarded-Host`). If that guesses wrong, set `SWIPE_PUBLIC_URL=https://<your-swipe-host>` explicitly.
 
-### Local Swipe accounts (optional)
+### Local Swipe accounts
 
-Every person can give their own account a password once logged in: **Settings → Account password**. The password is stored PBKDF2-hashed in the sessions database (`IMMICH_SESSIONS_DB`) and is never sent to Immich.
+Every person signs in with a **Swipe account**. Anyone signed in can set or change a password in **Settings → Account password**. The password is stored PBKDF2-hashed in the sessions database (`IMMICH_SESSIONS_DB`) and is never sent to Immich.
 
-- Env-configured users are **migrated into local accounts automatically** at startup — existing API keys keep working, nothing to reconfigure.
-- Until a password is set, a configured user is signed in with a single click on the login page (using their env API key server-side).
-- Once a password is set, that account is signed in with **user name + password** on the login page.
-- **Create account** on the login page sets a first password for a new (or migrated, still password-less) user name, binding an Immich API key to it. A migrated user name can only be claimed with the exact API key it is bound to.
-- A local account login uses the account's Immich API key server-side, exactly like an env-key login — the browser never sees it.
+- Env-configured users are **migrated into local accounts automatically** at startup, bound to their env API key.
+- **Create account** on the login page sets a user name + password. The Immich API key is optional at creation; add or change it in **Settings → Immich API key**. It is validated against Immich and stored on the server for your account — the browser never sees it.
+- Until the account has an Immich API key, proxied requests return `api_key_required` (HTTP 428) and the app sends you to Settings.
+- A migrated user name can only be claimed with the exact API key it is bound to.
+- SSO (OAuth) sessions do not use a local API key; the Immich access token is used server-side.
 
 Optional runtime variables:
 - `TRMNL_STATS_FILE` — path to persist keep/delete counters (see below)
@@ -157,26 +157,15 @@ services:
 
 > **Single-instance assumption:** counters are local to one server instance. Do not run multiple replicas behind a load balancer or the totals will diverge.
 
-### Option B: Immich account or API key login
+### Option B: Swipe account or SSO login
 
 On `/login` you can choose:
 
-0. **Configured user** (one click)  
-   - Logs in with that user's env API key server-side; if the account has a password, the Swipe account form is shown pre-filled
-1. **Swipe account** (user name + password + server URL)  
-   - Authenticates against the local accounts table (Settings → Account password)  
-   - Uses the account's Immich API key server-side — no Immich login round-trip
-2. **Immich account** (email + password + server URL)  
-   - The Go backend calls Immich password login and stores the Immich access token server-side  
-   - Requires password login enabled on Immich (`passwordLogin.enabled`)  
-   - Multiple people can each sign in with their own Immich account on the same deployment
-3. **API key** (server URL + API key)  
-   - Same as before; useful for private/single-user setups or when password login is disabled
-4. **Create account** (user name + password + API key + server URL)  
-   - Validates the API key against Immich and creates a local Swipe account in one step
-   - A user name that already has a password cannot be re-created (`account_exists`); a migrated env user can only be claimed with the exact API key it is bound to
+1. **Sign in** — **Swipe account** (user name + password + server URL) authenticated against the local accounts table. The account's Immich API key is used server-side; if the account has no key yet you are sent to Settings to add one.
+2. **Create account** (user name + password + optional API key + server URL) — creates a local Swipe account. A user name that already has a password cannot be re-created (`account_exists`); a migrated env user can only be claimed with the exact API key it is bound to.
+3. **Login with SSO** — shown when Immich has OAuth enabled; creates an access-token session with no local password or API key.
 
-Only opaque Swipe session tokens are kept in the browser — Immich passwords and access tokens never leave the backend.
+Only opaque Swipe session tokens are kept in the browser — Immich passwords, access tokens and API keys never leave the backend.
 
 ### Multi-person sessions
 

@@ -21,13 +21,13 @@ vi.mock('vue-router', async (importOriginal) => {
 
 let pinia: Pinia
 
-function stubLogin(configUsers: string[], loginResponse: { status: number; body: Record<string, unknown> }) {
+function stubLogin(loginResponse: { status: number; body: Record<string, unknown> }, configExtra: Record<string, unknown> = {}) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes('/api/auth/config')) {
-        return new Response(JSON.stringify({ users: configUsers, defaultServerUrl: null, version: 'test' }), {
+        return new Response(JSON.stringify({ defaultServerUrl: null, version: 'test', ...configExtra }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         })
@@ -65,95 +65,109 @@ describe('LoginView', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders configured users as one-click options', async () => {
-    stubLogin(['Martyn', 'Eve'], { status: 200, body: {} })
+  it('renders two tabs Sign in and Create account, Sign in is default', async () => {
+    stubLogin({ status: 200, body: {} })
     const wrapper = mountView()
     await flushPromises()
-
-    const buttons = wrapper.findAll('button').filter((b) => b.text() === 'Martyn' || b.text() === 'Eve')
-    expect(buttons.map((b) => b.text())).toEqual(['Martyn', 'Eve'])
+    const tabs = wrapper.findAll('[role="tab"]')
+    expect(tabs.map((t) => t.text())).toEqual(['Sign in', 'Create account'])
+    expect(tabs[0].attributes('aria-selected')).toBe('true')
   })
 
-  it('one-click login navigates home on success', async () => {
-    stubLogin(['Martyn'], {
-      status: 200,
-      body: { token: 't', userName: 'Martyn', serverUrl: 'https://immich', mode: 'apiKey' },
-    })
+  it('Sign in tab submits via loginWithAccount and navigates home on success', async () => {
+    stubLogin({ status: 200, body: { token: 't', userName: 'Alice', serverUrl: 'https://immich.example', mode: 'apiKey', hasApiKey: true } })
     const wrapper = mountView()
     await flushPromises()
-
-    await wrapper.findAll('button').find((b) => b.text() === 'Martyn')!.trigger('click')
+    await wrapper.find('input#serverUrl').setValue('https://immich.example')
+    await wrapper.find('input#userName').setValue('Alice')
+    await wrapper.find('input#password').setValue('secret123')
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
-
+    const fetchMock = vi.mocked(fetch)
+    const loginCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/auth/login'))
+    expect(loginCall).toBeTruthy()
+    const init = loginCall?.[1] as RequestInit
+    expect(JSON.parse(String(init.body))).toEqual({ userName: 'Alice', password: 'secret123', serverUrl: 'https://immich.example' })
     expect(m.push).toHaveBeenCalledWith('/')
   })
 
-  it('switches to the swipe tab and pre-fills the user when a password is required', async () => {
-    stubLogin(['Martyn'], { status: 401, body: { error: 'password required', code: 'password_required' } })
+  it('routes to /settings with needsApiKey toast when hasApiKey is false', async () => {
+    stubLogin({ status: 200, body: { token: 't', userName: 'Alice', serverUrl: 'https://immich.example', mode: 'apiKey', hasApiKey: false } })
     const wrapper = mountView()
     await flushPromises()
-
-    await wrapper.findAll('button').find((b) => b.text() === 'Martyn')!.trigger('click')
+    await wrapper.find('input#serverUrl').setValue('https://immich.example')
+    await wrapper.find('input#userName').setValue('Alice')
+    await wrapper.find('input#password').setValue('secret123')
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
-
-    const swipeTab = wrapper
-      .findAll('[role="tab"]')
-      .find((b) => b.text() === 'Swipe account')!
-    expect(swipeTab.attributes('aria-selected')).toBe('true')
-    const userNameInput = wrapper.find('input#userName').element as HTMLInputElement
-    expect(userNameInput.value).toBe('Martyn')
+    expect(m.push).toHaveBeenCalledWith('/settings')
   })
 
-  it('shows an error toast-style message when a picker login fails', async () => {
-    stubLogin(['Martyn'], { status: 401, body: { error: 'unknown user' } })
+  it('shows error when login fails', async () => {
+    stubLogin({ status: 401, body: { error: 'invalid password', code: 'invalid_password' } })
     const wrapper = mountView()
     await flushPromises()
-
-    await wrapper.findAll('button').find((b) => b.text() === 'Martyn')!.trigger('click')
+    await wrapper.find('input#serverUrl').setValue('https://immich.example')
+    await wrapper.find('input#userName').setValue('Alice')
+    await wrapper.find('input#password').setValue('wrong')
+    await wrapper.find('form').trigger('submit')
     await flushPromises()
-
-    expect(wrapper.text()).toContain('unknown user')
+    expect(wrapper.text()).toContain('invalid password')
     expect(m.push).not.toHaveBeenCalled()
   })
 
-  it('create-account tab submits userName, password and apiKey', async () => {
-    stubLogin(['Martyn'], {
-      status: 200,
-      body: { token: 't', userName: 'Bob', serverUrl: 'https://immich', mode: 'apiKey' },
-    })
+  it('Create account tab submits via loginWithAccountCreate with apiKey', async () => {
+    stubLogin({ status: 200, body: { token: 't', userName: 'Bob', serverUrl: 'https://immich.example', mode: 'apiKey', hasApiKey: true } })
     const wrapper = mountView()
     await flushPromises()
-
-    await wrapper
-      .findAll('[role="tab"]')
-      .find((b) => b.text() === 'Create account')!
-      .trigger('click')
-
+    await wrapper.findAll('[role="tab"]').find((b) => b.text() === 'Create account')!.trigger('click')
     await wrapper.find('input#serverUrl').setValue('https://immich.example')
-    await wrapper.find('input#userName').setValue('Bob')
-    await wrapper.find('input#password').setValue('secret123')
-    await wrapper.find('input#apiKey').setValue('key-bob')
+    await wrapper.find('input#createUserName').setValue('Bob')
+    await wrapper.find('input#createPassword').setValue('secret123')
+    await wrapper.find('input#createApiKey').setValue('key-bob')
     await wrapper.find('form').trigger('submit')
     await flushPromises()
-
     const fetchMock = vi.mocked(fetch)
     const loginCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/auth/login'))
     const init = loginCall?.[1] as RequestInit
-    expect(JSON.parse(String(init.body))).toEqual({
-      userName: 'Bob',
-      password: 'secret123',
-      apiKey: 'key-bob',
-      serverUrl: 'https://immich.example',
-    })
+    expect(JSON.parse(String(init.body))).toEqual({ userName: 'Bob', password: 'secret123', apiKey: 'key-bob', serverUrl: 'https://immich.example', create: true })
     expect(m.push).toHaveBeenCalledWith('/')
   })
 
-  it('hides the SSO button when OAuth is not enabled', async () => {
-    stubLogin([], { status: 200, body: {} })
+  it('Create account routes to /settings when needsApiKey', async () => {
+    stubLogin({ status: 200, body: { token: 't', userName: 'Bob', serverUrl: 'https://immich.example', mode: 'apiKey', hasApiKey: false } })
     const wrapper = mountView()
     await flushPromises()
+    await wrapper.findAll('[role="tab"]').find((b) => b.text() === 'Create account')!.trigger('click')
+    await wrapper.find('input#serverUrl').setValue('https://immich.example')
+    await wrapper.find('input#createUserName').setValue('Bob')
+    await wrapper.find('input#createPassword').setValue('secret123')
+    await wrapper.find('input#createApiKey').setValue('')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(m.push).toHaveBeenCalledWith('/settings')
+  })
 
+  it('Create account validates short password client-side', async () => {
+    stubLogin({ status: 200, body: {} })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.findAll('[role="tab"]').find((b) => b.text() === 'Create account')!.trigger('click')
+    await wrapper.find('input#serverUrl').setValue('https://immich.example')
+    await wrapper.find('input#createUserName').setValue('Bob')
+    await wrapper.find('input#createPassword').setValue('short')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('8 characters')
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('/api/auth/login')).length).toBe(0)
+  })
+
+  it('hides the SSO button when OAuth is not enabled', async () => {
+    stubLogin({ status: 200, body: {} })
+    const wrapper = mountView()
+    await flushPromises()
     expect(wrapper.text()).not.toContain('Login with SSO')
+    expect(wrapper.text()).not.toContain('Continue with SSO')
   })
 
   it('shows the SSO button with the server button text and starts the flow', async () => {
@@ -164,7 +178,6 @@ describe('LoginView', () => {
         if (url.includes('/api/auth/config')) {
           return new Response(
             JSON.stringify({
-              users: [],
               defaultServerUrl: 'https://immich.example',
               version: 'test',
               oauthEnabled: true,
@@ -184,11 +197,8 @@ describe('LoginView', () => {
     )
     const wrapper = mountView()
     await flushPromises()
-
     const sso = wrapper.findAll('button').find((b) => b.text() === 'Continue with SSO')!
     expect(sso.exists()).toBe(true)
-
-    // jsdom doesn't navigate: capture the redirect target instead.
     const realLocation = window.location
     const fakeLocation = { href: '' }
     Object.defineProperty(window, 'location', { value: fakeLocation, writable: true, configurable: true })
@@ -199,13 +209,10 @@ describe('LoginView', () => {
     } finally {
       Object.defineProperty(window, 'location', { value: realLocation, configurable: true })
     }
-
     const fetchMock = vi.mocked(fetch)
     const startCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/auth/oauth/start'))
     expect(startCall).toBeTruthy()
-    expect(JSON.parse(String((startCall?.[1] as RequestInit).body))).toEqual({
-      serverUrl: 'https://immich.example',
-    })
+    expect(JSON.parse(String((startCall?.[1] as RequestInit).body))).toEqual({ serverUrl: 'https://immich.example' })
     expect(fakeLocation.href).toBe('https://idp.example/auth')
   })
 
@@ -216,19 +223,14 @@ describe('LoginView', () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input)
         if (url.includes('/api/auth/config')) {
-          return new Response(JSON.stringify({ users: [], defaultServerUrl: null, version: 'test' }), {
+          return new Response(JSON.stringify({ defaultServerUrl: null, version: 'test' }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/api/auth/oauth/finish')) {
           return new Response(
-            JSON.stringify({
-              token: 't',
-              userName: 'SSO User',
-              serverUrl: 'https://immich.example',
-              mode: 'accessToken',
-            }),
+            JSON.stringify({ token: 't', userName: 'SSO User', serverUrl: 'https://immich.example', mode: 'accessToken' }),
             { status: 200, headers: { 'Content-Type': 'application/json' } },
           )
         }
@@ -237,17 +239,15 @@ describe('LoginView', () => {
     )
     mountView()
     await flushPromises()
-
     expect(m.replace).toHaveBeenCalledWith({ path: '/login', query: {} })
     expect(m.push).toHaveBeenCalledWith('/')
   })
 
   it('shows an error for an oauthError query', async () => {
     m.routeQuery = { oauthError: 'invalid_state' }
-    stubLogin([], { status: 200, body: {} })
+    stubLogin({ status: 200, body: {} })
     const wrapper = mountView()
     await flushPromises()
-
     expect(wrapper.text()).toContain('SSO login expired')
     expect(m.push).not.toHaveBeenCalled()
   })

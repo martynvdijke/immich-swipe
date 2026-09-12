@@ -188,7 +188,9 @@ func (s *AccountStore) SetPassword(serverURL, userName, apiKey, password string)
 	s.mu.Lock()
 	if existing, ok := s.mem[accountKey(serverURL, userName)]; ok {
 		existing.PasswordHash = &hash
-		existing.APIKey = apiKey
+		if apiKey != "" {
+			existing.APIKey = apiKey
+		}
 	} else {
 		s.mem[accountKey(serverURL, userName)] = &Account{
 			ServerURL:    serverURL,
@@ -202,13 +204,45 @@ func (s *AccountStore) SetPassword(serverURL, userName, apiKey, password string)
 	if s.db == nil {
 		return
 	}
+	// An empty apiKey means "leave the stored key untouched" (password change
+	// must not wipe a key that was set earlier from Settings).
 	_, err := s.db.Exec(
 		`INSERT INTO accounts (server_url, user_name, password_hash, api_key, created_at) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(server_url, user_name) DO UPDATE SET password_hash = excluded.password_hash, api_key = excluded.api_key`,
+		 ON CONFLICT(server_url, user_name) DO UPDATE SET password_hash = excluded.password_hash,
+		 api_key = CASE WHEN excluded.api_key = '' THEN accounts.api_key ELSE excluded.api_key END`,
 		serverURL, userName, hash, apiKey, time.Now().Unix(),
 	)
 	if err != nil {
 		log.Printf("Warning: cannot persist account %q: %v", userName, err)
+	}
+}
+
+// SetAPIKey stores the Immich API key for an existing local account (or
+// creates the record if it is missing). Unlike SetPassword it never touches
+// the password hash.
+func (s *AccountStore) SetAPIKey(serverURL, userName, apiKey string) {
+	s.mu.Lock()
+	if existing, ok := s.mem[accountKey(serverURL, userName)]; ok {
+		existing.APIKey = apiKey
+	} else {
+		s.mem[accountKey(serverURL, userName)] = &Account{
+			ServerURL: serverURL,
+			UserName:  userName,
+			APIKey:    apiKey,
+			CreatedAt: time.Now(),
+		}
+	}
+	s.mu.Unlock()
+	if s.db == nil {
+		return
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO accounts (server_url, user_name, password_hash, api_key, created_at) VALUES (?, ?, NULL, ?, ?)
+		 ON CONFLICT(server_url, user_name) DO UPDATE SET api_key = excluded.api_key`,
+		serverURL, userName, apiKey, time.Now().Unix(),
+	)
+	if err != nil {
+		log.Printf("Warning: cannot persist API key for account %q: %v", userName, err)
 	}
 }
 

@@ -1,5 +1,6 @@
 import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
+import { flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsView from '@/views/SettingsView.vue'
@@ -215,6 +216,66 @@ describe('SettingsView', () => {
       await saveBtn.trigger('click')
       await nextTick()
       expect(wrapper.find('[data-testid="account-error"]').text()).toContain('8 characters')
+    })
+  })
+
+  describe('Immich API key section', () => {
+    it('is hidden for access-token sessions', async () => {
+      localStorage.clear()
+      pinia = createPinia()
+      setActivePinia(pinia)
+      seedAuthSession('test-token', 'Alice', 'http://server-a', 'accessToken')
+      const wrapper = mountView()
+      await nextTick()
+      expect(wrapper.find('[data-testid="account-api-key-save-btn"]').exists()).toBe(false)
+    })
+
+    it('saves API key via setApiKey', async () => {
+      localStorage.clear()
+      pinia = createPinia()
+      setActivePinia(pinia)
+      seedAuthSession('test-token', 'Alice', 'http://server-a', 'apiKey')
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api/auth/config')) return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (url.includes('/api/auth/account/apikey')) return new Response(JSON.stringify({ status: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        return new Response('not found', { status: 404 })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const wrapper = mountView()
+      await nextTick()
+      await wrapper.find('[data-testid="account-api-key"]').setValue('my-api-key')
+      await wrapper.find('[data-testid="account-api-key-save-btn"]').trigger('click')
+      await nextTick()
+      const c = fetchMock.mock.calls.find(([url]) => String(url).includes('/api/auth/account/apikey')) as unknown as [string, RequestInit] | undefined
+      expect(c).toBeTruthy()
+      expect(JSON.parse(String(c?.[1]?.body))).toEqual({ apiKey: 'my-api-key' })
+      expect(wrapper.find('[data-testid="account-api-key-error"]').exists()).toBe(false)
+    })
+
+    it('shows error when API key is empty', async () => {
+      const wrapper = mountView()
+      await nextTick()
+      await wrapper.find('[data-testid="account-api-key-save-btn"]').trigger('click')
+      await nextTick()
+      expect(wrapper.find('[data-testid="account-api-key-error"]').text()).toContain('Please enter')
+    })
+
+    it('shows backend error on Invalid API key', async () => {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api/auth/config')) return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        if (url.includes('/api/auth/account/apikey')) return new Response(JSON.stringify({ error: 'Invalid API key' }), { status: 401, headers: { 'Content-Type': 'application/json' } })
+        return new Response('not found', { status: 404 })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const wrapper = mountView()
+      await nextTick()
+      await wrapper.find('[data-testid="account-api-key"]').setValue('bad')
+      await wrapper.find('[data-testid="account-api-key-save-btn"]').trigger('click')
+      await flushPromises()
+      await nextTick()
+      expect(wrapper.find('[data-testid="account-api-key-error"]').text()).toContain('Invalid API key')
     })
   })
 })

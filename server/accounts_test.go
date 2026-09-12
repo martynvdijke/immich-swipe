@@ -198,29 +198,31 @@ func TestLoginHandler_EnvUserPasswordRequired(t *testing.T) {
 	immich := newImmichStub(t)
 	srv := NewServer(Config{ServerURL: immich.URL, Users: []UserConfig{{Name: "Alice", APIKey: "key-alice"}}})
 
-	// Without a password: legacy auto-login keeps working.
+	// Without a password: userName alone is now unsupported (no auto-login).
 	raw, _ := json.Marshal(map[string]string{"userName": "Alice"})
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	srv.loginHandler(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected legacy env auto-login 200, got %d body=%s", rr.Code, rr.Body.String())
-	}
-
-	// Once a password is set, userName alone must be rejected.
-	srv.accounts.SetPassword(immich.URL, "Alice", "key-alice", "secret123")
-	req = httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
-	rr = httptest.NewRecorder()
-	srv.loginHandler(rr, req)
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 password_required, got %d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 unsupported login method, got %d body=%s", rr.Code, rr.Body.String())
 	}
 	var resp map[string]string
 	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
-	if resp["code"] != "password_required" {
-		t.Fatalf("expected code password_required, got %q", resp["code"])
+	if !strings.Contains(resp["error"], "unsupported login method") {
+		t.Fatalf("expected unsupported login method error, got %q", rr.Body.String())
+	}
+
+	// Once a password is set, sign-in with userName+password succeeds.
+	raw2, _ := json.Marshal(map[string]string{"userName": "Alice", "password": "secret123"})
+	// Set password separately to bind key
+	srv.accounts.SetPassword(immich.URL, "Alice", "key-alice", "secret123")
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(raw2))
+	req.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	srv.loginHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 after password set, got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -287,6 +289,11 @@ func TestAccountHandler(t *testing.T) {
 	if _, ok := srv.accounts.VerifyPassword(immich.URL, "Alice", "newsecret"); !ok {
 		t.Fatal("expected new password to verify")
 	}
+	// SetPassword with empty apiKey must preserve existing key.
+	account, _ := srv.accounts.Get(immich.URL, "Alice")
+	if account.APIKey != "key-alice" {
+		t.Fatalf("expected preserved api key after password change, got %q", account.APIKey)
+	}
 
 	// Too short → 400 weak_password.
 	req = httptest.NewRequest(http.MethodPost, "/api/auth/account", strings.NewReader(`{"password":"short"}`))
@@ -299,7 +306,7 @@ func TestAccountHandler(t *testing.T) {
 	}
 
 	// The account must never store the plaintext password.
-	account, _ := srv.accounts.Get(immich.URL, "Alice")
+	account, _ = srv.accounts.Get(immich.URL, "Alice")
 	if account.PasswordHash != nil && strings.Contains(*account.PasswordHash, "newsecret") {
 		t.Fatal("plaintext password leaked into stored hash")
 	}
@@ -318,7 +325,7 @@ func TestLoginHandler_AccountCreateSuccess(t *testing.T) {
 	immich := newImmichStub(t)
 	srv := NewServer(Config{ServerURL: immich.URL})
 
-	rr := postLogin(srv, `{"userName":"Bob","password":"secret123","apiKey":"key-bob","serverUrl":"`+immich.URL+`"}`)
+	rr := postLogin(srv, `{"userName":"Bob","password":"secret123","create":true,"apiKey":"key-bob","serverUrl":"`+immich.URL+`"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -327,12 +334,16 @@ func TestLoginHandler_AccountCreateSuccess(t *testing.T) {
 		UserName  string `json:"userName"`
 		ServerURL string `json:"serverUrl"`
 		Mode      string `json:"mode"`
+		HasAPIKey bool   `json:"hasApiKey"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
 	if resp.Token == "" || resp.Mode != "apiKey" {
 		t.Fatalf("expected apiKey session token, got %+v", resp)
+	}
+	if !resp.HasAPIKey {
+		t.Fatal("expected hasApiKey true")
 	}
 
 	// Account created with hashed password and bound key.
@@ -361,8 +372,8 @@ func TestLoginHandler_AccountCreateFailures(t *testing.T) {
 	immich := newImmichStub(t)
 	srv := NewServer(Config{ServerURL: immich.URL})
 
-	t.Run("weak password", func(t *testing.T) {
-		rr := postLogin(srv, `{"userName":"Bob","password":"short","apiKey":"key","serverUrl":"`+immich.URL+`"}`)
+	t.Run("weak_password", func(t *testing.T) {
+		rr := postLogin(srv, `{"userName":"Bob","password":"short","create":true,"apiKey":"key","serverUrl":"`+immich.URL+`"}`)
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
 		}
@@ -373,7 +384,7 @@ func TestLoginHandler_AccountCreateFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid api key", func(t *testing.T) {
+	t.Run("invalid_api_key", func(t *testing.T) {
 		// Immich stub that rejects unknown keys.
 		strict := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("x-api-key") == "good-key" {
@@ -386,7 +397,7 @@ func TestLoginHandler_AccountCreateFailures(t *testing.T) {
 		defer strict.Close()
 		strictSrv := NewServer(Config{ServerURL: strict.URL})
 
-		rr := postLogin(strictSrv, `{"userName":"NewUser","password":"secret123","apiKey":"bad-key","serverUrl":"`+strict.URL+`"}`)
+		rr := postLogin(strictSrv, `{"userName":"NewUser","password":"secret123","create":true,"apiKey":"bad-key","serverUrl":"`+strict.URL+`"}`)
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
 		}
@@ -395,14 +406,14 @@ func TestLoginHandler_AccountCreateFailures(t *testing.T) {
 		if resp["code"] != "invalid_api_key" {
 			t.Fatalf("expected invalid_api_key, got %q", resp["code"])
 		}
-		if srv.accounts.HasPassword(strict.URL, "NewUser") {
+		if strictSrv.accounts.HasPassword(strict.URL, "NewUser") {
 			t.Fatal("no account must be created for an invalid API key")
 		}
 	})
 
-	t.Run("existing password cannot be re-claimed", func(t *testing.T) {
+	t.Run("existing_password_cannot_be_re-claimed", func(t *testing.T) {
 		srv.accounts.SetPassword(immich.URL, "Alice", "key-alice", "secret123")
-		rr := postLogin(srv, `{"userName":"Alice","password":"anotherpass","apiKey":"key-alice","serverUrl":"`+immich.URL+`"}`)
+		rr := postLogin(srv, `{"userName":"Alice","password":"anotherpass","create":true,"apiKey":"key-alice","serverUrl":"`+immich.URL+`"}`)
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
 		}
@@ -424,8 +435,8 @@ func TestLoginHandler_AccountCreateClaimMigratedUser(t *testing.T) {
 	// Env user migrates into accounts without a password, bound to its key.
 	srv := NewServer(Config{ServerURL: immich.URL, Users: []UserConfig{{Name: "Martyn", APIKey: "key-martyn"}}})
 
-	t.Run("matching key claims the account", func(t *testing.T) {
-		rr := postLogin(srv, `{"userName":"Martyn","password":"secret123","apiKey":"key-martyn","serverUrl":"`+immich.URL+`"}`)
+	t.Run("matching_key_claims_the_account", func(t *testing.T) {
+		rr := postLogin(srv, `{"userName":"Martyn","password":"secret123","create":true,"apiKey":"key-martyn","serverUrl":"`+immich.URL+`"}`)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
 		}
@@ -434,10 +445,10 @@ func TestLoginHandler_AccountCreateClaimMigratedUser(t *testing.T) {
 		}
 	})
 
-	t.Run("foreign key cannot claim the account", func(t *testing.T) {
+	t.Run("foreign_key_cannot_claim_the_account", func(t *testing.T) {
 		// Fresh server so the account still has no password.
 		fresh := NewServer(Config{ServerURL: immich.URL, Users: []UserConfig{{Name: "Martyn", APIKey: "key-martyn"}}})
-		rr := postLogin(fresh, `{"userName":"Martyn","password":"secret123","apiKey":"evil-key","serverUrl":"`+immich.URL+`"}`)
+		rr := postLogin(fresh, `{"userName":"Martyn","password":"secret123","create":true,"apiKey":"evil-key","serverUrl":"`+immich.URL+`"}`)
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
 		}
@@ -450,4 +461,175 @@ func TestLoginHandler_AccountCreateClaimMigratedUser(t *testing.T) {
 			t.Fatal("account must not be claimed with a foreign key")
 		}
 	})
+}
+
+func TestLoginHandler_SignInWithoutAPIKeyValidation(t *testing.T) {
+	// Sign-in must not call Immich; even if the stored key is invalid,
+	// login should succeed and hasApiKey reflected.
+	immich := newImmichStub(t)
+	srv := NewServer(Config{ServerURL: immich.URL})
+	srv.accounts.SetPassword(immich.URL, "NoKeyUser", "", "secret123")
+
+	raw, _ := json.Marshal(map[string]string{"userName": "NoKeyUser", "password": "secret123"})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.loginHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp["hasApiKey"] != false {
+		t.Fatalf("expected hasApiKey false for blank-key account, got %v", rr.Body.String())
+	}
+	if resp["mode"] != "apiKey" {
+		t.Fatalf("expected mode apiKey, got %v", resp["mode"])
+	}
+}
+
+func TestLoginHandler_AccountCreateBlankAPIKey(t *testing.T) {
+	// New name with blank apiKey must succeed with no Immich call and hasApiKey false.
+	calls := 0
+	immich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"name":"x"}`))
+	}))
+	defer immich.Close()
+
+	srv := NewServer(Config{ServerURL: immich.URL})
+	rr := postLogin(srv, `{"userName":"Fresh","password":"secret123","create":true,"serverUrl":"`+immich.URL+`"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp["hasApiKey"] != false {
+		t.Fatalf("expected hasApiKey false for blank key, got %s", rr.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("expected no Immich call for blank apiKey, got %d", calls)
+	}
+	if !srv.accounts.HasPassword(immich.URL, "Fresh") {
+		t.Fatal("expected account created")
+	}
+	acc, _ := srv.accounts.Get(immich.URL, "Fresh")
+	if acc.APIKey != "" {
+		t.Fatalf("expected blank stored key, got %q", acc.APIKey)
+	}
+}
+
+func TestAPIKeyHandler(t *testing.T) {
+	immich := newImmichStub(t)
+	// stub validates only "valid-key"
+	validatingImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-api-key") == "valid-key" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"name":"Alice"}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer validatingImmich.Close()
+
+	t.Run("success", func(t *testing.T) {
+		srv := NewServer(Config{ServerURL: validatingImmich.URL})
+		// start with blank key account
+		srv.accounts.SetPassword(validatingImmich.URL, "Alice", "", "secret123")
+		token := srv.session.CreateAPIKey("Alice", "", validatingImmich.URL)
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/account/apikey", strings.NewReader(`{"apiKey":"valid-key"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		acc, _ := srv.accounts.Get(validatingImmich.URL, "Alice")
+		if acc.APIKey != "valid-key" {
+			t.Fatalf("expected stored key valid-key, got %q", acc.APIKey)
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		srv := NewServer(Config{ServerURL: validatingImmich.URL})
+		srv.accounts.SetPassword(validatingImmich.URL, "Alice", "", "secret123")
+		token := srv.session.CreateAPIKey("Alice", "", validatingImmich.URL)
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/account/apikey", strings.NewReader(`{"apiKey":""}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+		if resp["code"] != "invalid_api_key" {
+			t.Fatalf("expected invalid_api_key, got %q", resp["code"])
+		}
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		srv := NewServer(Config{ServerURL: validatingImmich.URL})
+		srv.accounts.SetPassword(validatingImmich.URL, "Alice", "", "secret123")
+		token := srv.session.CreateAPIKey("Alice", "", validatingImmich.URL)
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/account/apikey", strings.NewReader(`{"apiKey":"bad-key"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+		if resp["code"] != "invalid_api_key" {
+			t.Fatalf("expected invalid_api_key, got %q", resp["code"])
+		}
+	})
+
+	t.Run("unsupported_mode", func(t *testing.T) {
+		srv := NewServer(Config{ServerURL: immich.URL})
+		token := srv.session.CreateAccessToken("Alice", "jwt", immich.URL, "a@b.c", "uid")
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/account/apikey", strings.NewReader(`{"apiKey":"valid-key"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
+		}
+		var resp map[string]string
+		_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+		if resp["code"] != "unsupported_mode" {
+			t.Fatalf("expected unsupported_mode, got %q", resp["code"])
+		}
+	})
+}
+
+func TestProxy_ApiKeyRequired(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("upstream must not be called when api key missing")
+	}))
+	defer upstream.Close()
+
+	srv := NewServer(Config{ServerURL: upstream.URL})
+	// Account with blank key
+	srv.accounts.SetPassword(upstream.URL, "Alice", "", "secret123")
+	token := srv.session.CreateAPIKey("Alice", "", upstream.URL)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusPreconditionRequired {
+		t.Fatalf("expected 428, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp["code"] != "api_key_required" {
+		t.Fatalf("expected api_key_required, got %q", resp["code"])
+	}
 }
