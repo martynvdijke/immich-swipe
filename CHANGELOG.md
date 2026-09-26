@@ -1,3 +1,10 @@
+## [1.11.11](https://github.com/martynvdijke/immich-swipe/compare/v1.11.10...v1.11.11) (2026-09-26)
+
+
+### Bug Fixes
+
+* **auth:** stop env migration clobbering account API keys; reuse OAuth redirect_uri ([92ba03c](https://github.com/martynvdijke/immich-swipe/commit/92ba03caf8fed7977871c67f3a9b93b608c3d633))
+
 ## [1.11.10](https://github.com/martynvdijke/immich-swipe/compare/v1.11.9...v1.11.10) (2026-09-26)
 
 ## [1.11.9](https://github.com/martynvdijke/immich-swipe/compare/v1.11.8...v1.11.9) (2026-09-25)
