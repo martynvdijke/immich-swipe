@@ -32,6 +32,10 @@ import (
 // Version is set at build time via -ldflags (e.g. -X main.Version=1.2.5)
 var Version = "dev"
 
+// immichHTTPClient bounds all outbound calls to Immich/the IdP so a hung
+// upstream cannot tie up a request or login indefinitely.
+var immichHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 type UserConfig struct {
 	Name   string
 	APIKey string
@@ -165,7 +169,7 @@ func NewSessionStore(dbPath string) *SessionStore {
 		defer rows.Close()
 		for rows.Next() {
 			var (
-				token, userName, serverURL, mode     string
+				token, userName, serverURL, mode       string
 				apiKey, accessToken, userEmail, userID sql.NullString
 				expiresAt                              int64
 			)
@@ -661,6 +665,7 @@ type oauthPending struct {
 	CodeVerifier string
 	Cookies      []*http.Cookie // immich_oauth_* cookies set by Immich authorize
 	ServerURL    string
+	RedirectURI  string // exact redirect_uri sent to Immich at start; reused at callback
 	ExpiresAt    time.Time
 }
 
@@ -689,7 +694,7 @@ func (s *Server) immichOAuthConfig(serverURL string) (enabled bool, buttonText s
 		return false, ""
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := immichHTTPClient.Do(req)
 	if err != nil {
 		return false, ""
 	}
@@ -750,7 +755,7 @@ func oauthPostJSON(targetURL string, payload interface{}, cookies []*http.Cookie
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := immichHTTPClient.Do(req)
 	if err != nil {
 		return nil, 0
 	}
@@ -824,7 +829,7 @@ func (s *Server) oauthStartHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	authReq.Header.Set("Content-Type", "application/json")
 	authReq.Header.Set("Accept", "application/json")
-	authResp, err := http.DefaultClient.Do(authReq)
+	authResp, err := immichHTTPClient.Do(authReq)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
 		return
@@ -859,6 +864,7 @@ func (s *Server) oauthStartHandler(w http.ResponseWriter, r *http.Request) {
 		CodeVerifier: verifier,
 		Cookies:      authResp.Cookies(),
 		ServerURL:    serverURL,
+		RedirectURI:  redirectURI,
 		ExpiresAt:    now.Add(oauthPendingTTL),
 	}
 	s.oauthMu.Unlock()
@@ -896,7 +902,10 @@ func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	callbackURL := s.oauthPublicBase(r) + "/api/auth/oauth/callback?code=" +
+	// Reuse the exact redirect_uri sent to Immich at start. Re-deriving it from
+	// this request's headers can differ behind a proxy (scheme/host), which
+	// makes Immich's token exchange send a redirect_uri the IdP never saw.
+	callbackURL := pending.RedirectURI + "?code=" +
 		url.QueryEscape(code) + "&state=" + url.QueryEscape(state)
 	respBody, status := oauthPostJSON(
 		strings.TrimRight(pending.ServerURL, "/")+"/api/oauth/callback",
@@ -1139,7 +1148,7 @@ func (s *Server) validateUserMe(serverURL string, setAuth func(*http.Request)) (
 	setAuth(req)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := immichHTTPClient.Do(req)
 	if err != nil {
 		return false, "", err
 	}
@@ -1198,7 +1207,7 @@ func (s *Server) immichLogout(serverURL, accessToken string) {
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := immichHTTPClient.Do(req)
 	if err != nil {
 		return
 	}

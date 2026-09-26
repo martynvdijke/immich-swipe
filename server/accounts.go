@@ -79,8 +79,8 @@ func NewAccountStore(db *sql.DB, envUsers []UserConfig, defaultServerURL string)
 			for rows.Next() {
 				var (
 					serverURL, userName, apiKey string
-					passwordHash                 sql.NullString
-					createdAt                    int64
+					passwordHash                sql.NullString
+					createdAt                   int64
 				)
 				if err := rows.Scan(&serverURL, &userName, &passwordHash, &apiKey, &createdAt); err != nil {
 					log.Printf("Warning: skipping malformed account row: %v", err)
@@ -103,9 +103,11 @@ func NewAccountStore(db *sql.DB, envUsers []UserConfig, defaultServerURL string)
 		}
 	}
 
-	// Migration: existing env-configured users become accounts bound to their
-	// env API key. INSERT ... ON CONFLICT DO UPDATE keeps the env key fresh on
-	// restarts but never overwrites a password a person has already set.
+	// Migration: env-configured users seed local accounts bound to their env
+	// API key. Existing accounts are left untouched (ON CONFLICT DO NOTHING):
+	// once a person has claimed an account, their password and API key are
+	// managed in Settings and must not be clobbered by a stale env value on
+	// every restart.
 	migrated := 0
 	for _, u := range envUsers {
 		if defaultServerURL == "" || u.APIKey == "" {
@@ -119,16 +121,18 @@ func NewAccountStore(db *sql.DB, envUsers []UserConfig, defaultServerURL string)
 		}
 		key := accountKey(defaultServerURL, u.Name)
 		s.mu.Lock()
-		if existing, ok := s.mem[key]; ok {
-			existing.APIKey = u.APIKey
-		} else {
+		_, exists := s.mem[key]
+		if !exists {
 			s.mem[key] = account
 		}
 		s.mu.Unlock()
+		if exists {
+			continue
+		}
 		if s.db != nil {
 			if _, err := db.Exec(
 				`INSERT INTO accounts (server_url, user_name, password_hash, api_key, created_at) VALUES (?, ?, NULL, ?, ?)
-				 ON CONFLICT(server_url, user_name) DO UPDATE SET api_key = excluded.api_key`,
+				 ON CONFLICT(server_url, user_name) DO NOTHING`,
 				defaultServerURL, u.Name, u.APIKey, account.CreatedAt.Unix(),
 			); err != nil {
 				log.Printf("Warning: cannot migrate env user %q into accounts: %v", u.Name, err)

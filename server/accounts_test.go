@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -631,5 +633,38 @@ func TestProxy_ApiKeyRequired(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
 	if resp["code"] != "api_key_required" {
 		t.Fatalf("expected api_key_required, got %q", resp["code"])
+	}
+}
+
+// TestNewAccountStore_DoesNotClobberSetAPIKey guards the restart path: a key a
+// person set in Settings must survive a restart even when the env key for that
+// account name is stale.
+func TestNewAccountStore_DoesNotClobberSetAPIKey(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "accounts.db")
+	open := func() *sql.DB {
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open db: %v", err)
+		}
+		return db
+	}
+	envUsers := []UserConfig{{Name: "Alice", APIKey: "key-alice-old"}}
+
+	// First boot migrates Alice, then she rotates her key in Settings.
+	db1 := open()
+	store1 := NewAccountStore(db1, envUsers, "http://immich.example")
+	store1.SetAPIKey("http://immich.example", "Alice", "key-alice-new")
+	db1.Close()
+
+	// Restart with the stale env key: the stored key must win.
+	db2 := open()
+	defer db2.Close()
+	store2 := NewAccountStore(db2, envUsers, "http://immich.example")
+	alice, ok := store2.Get("http://immich.example", "Alice")
+	if !ok {
+		t.Fatal("expected Alice account after restart")
+	}
+	if alice.APIKey != "key-alice-new" {
+		t.Fatalf("stale env key clobbered stored key: got %q", alice.APIKey)
 	}
 }

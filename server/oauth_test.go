@@ -236,3 +236,73 @@ func TestConfigHandler_OAuthFields(t *testing.T) {
 		t.Fatalf("unexpected oauth config: %s", rr.Body.String())
 	}
 }
+
+// TestOAuthCallback_ReusesStartRedirectURI guards against re-deriving the
+// callback URL from the incoming callback request's headers: behind a proxy
+// those can differ from the start request, making Immich's token exchange send
+// a redirect_uri the IdP never saw.
+func TestOAuthCallback_ReusesStartRedirectURI(t *testing.T) {
+	var authorizeRedirect, callbackURL string
+	immich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/api/public/config"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"oauth":{"enabled":true,"buttonText":"SSO"}}`))
+		case strings.HasSuffix(r.URL.Path, "/api/oauth/authorize"):
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]string
+			_ = json.Unmarshal(body, &payload)
+			authorizeRedirect = payload["redirectUri"]
+			http.SetCookie(w, &http.Cookie{Name: "immich_oauth_state", Value: "state-cookie"})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"url":"https://idp.example/authorize"}`))
+		case strings.HasSuffix(r.URL.Path, "/api/oauth/callback"):
+			body, _ := io.ReadAll(r.Body)
+			var payload map[string]string
+			_ = json.Unmarshal(body, &payload)
+			callbackURL = payload["url"]
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"accessToken":"tok","name":"SSO User","userEmail":"sso@example.com","userId":"uid"}`))
+		case strings.HasSuffix(r.URL.Path, "/api/users/me"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"name":"SSO User","email":"sso@example.com"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer immich.Close()
+
+	srv := NewServer(Config{ServerURL: immich.URL})
+
+	startReq := httptest.NewRequest(http.MethodPost, "/api/auth/oauth/start", strings.NewReader(`{}`))
+	startReq.Header.Set("Content-Type", "application/json")
+	startReq.Header.Set("X-Forwarded-Proto", "https")
+	startReq.Host = "start.example"
+	startRR := httptest.NewRecorder()
+	srv.oauthStartHandler(startRR, startReq)
+	if startRR.Code != http.StatusOK {
+		t.Fatalf("start failed: %d %s", startRR.Code, startRR.Body.String())
+	}
+	if authorizeRedirect != "https://start.example/api/auth/oauth/callback" {
+		t.Fatalf("unexpected authorize redirectUri: %q", authorizeRedirect)
+	}
+	var start struct {
+		State string `json:"state"`
+	}
+	_ = json.Unmarshal(startRR.Body.Bytes(), &start)
+
+	// The IdP redirect arrives on a different host/proto than the start request.
+	cbReq := httptest.NewRequest(http.MethodGet,
+		"/api/auth/oauth/callback?code=idp-code&state="+url.QueryEscape(start.State), nil)
+	cbReq.Host = "proxy.example"
+	cbRR := httptest.NewRecorder()
+	srv.oauthCallbackHandler(cbRR, cbReq)
+	if cbRR.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d body=%s", cbRR.Code, cbRR.Body.String())
+	}
+	if !strings.HasPrefix(callbackURL, authorizeRedirect+"?") {
+		t.Fatalf("callback url must reuse the start redirect_uri\n got: %q\nwant prefix: %q", callbackURL, authorizeRedirect)
+	}
+}
