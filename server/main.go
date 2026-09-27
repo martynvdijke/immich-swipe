@@ -902,11 +902,12 @@ func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reuse the exact redirect_uri sent to Immich at start. Re-deriving it from
-	// this request's headers can differ behind a proxy (scheme/host), which
-	// makes Immich's token exchange send a redirect_uri the IdP never saw.
-	callbackURL := pending.RedirectURI + "?code=" +
-		url.QueryEscape(code) + "&state=" + url.QueryEscape(state)
+	// Forward the IdP's exact query verbatim, anchored to the redirect_uri sent
+	// to Immich at start. Rebuilding only code+state drops params the IdP sends
+	// (e.g. Authelia's RFC 9207 `iss`), which Immich's oauth4webapi rejects as
+	// OAUTH_INVALID_RESPONSE; re-deriving the base from this request's headers
+	// can differ behind a proxy (scheme/host) and break the token exchange.
+	callbackURL := pending.RedirectURI + "?" + r.URL.RawQuery
 	respBody, status := oauthPostJSON(
 		strings.TrimRight(pending.ServerURL, "/")+"/api/oauth/callback",
 		map[string]string{"url": callbackURL, "state": state, "codeVerifier": pending.CodeVerifier},

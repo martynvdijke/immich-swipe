@@ -293,9 +293,11 @@ func TestOAuthCallback_ReusesStartRedirectURI(t *testing.T) {
 	}
 	_ = json.Unmarshal(startRR.Body.Bytes(), &start)
 
-	// The IdP redirect arrives on a different host/proto than the start request.
-	cbReq := httptest.NewRequest(http.MethodGet,
-		"/api/auth/oauth/callback?code=idp-code&state="+url.QueryEscape(start.State), nil)
+	// The IdP redirect arrives on a different host/proto than the start request,
+	// and includes the RFC 9207 `iss` param (Authelia sends it) that must be
+	// forwarded verbatim or Immich's oauth4webapi rejects it as OAUTH_INVALID_RESPONSE.
+	rawQuery := "code=idp-code&state=" + url.QueryEscape(start.State) + "&iss=" + url.QueryEscape("https://idp.example")
+	cbReq := httptest.NewRequest(http.MethodGet, "/api/auth/oauth/callback?"+rawQuery, nil)
 	cbReq.Host = "proxy.example"
 	cbRR := httptest.NewRecorder()
 	srv.oauthCallbackHandler(cbRR, cbReq)
@@ -304,5 +306,8 @@ func TestOAuthCallback_ReusesStartRedirectURI(t *testing.T) {
 	}
 	if !strings.HasPrefix(callbackURL, authorizeRedirect+"?") {
 		t.Fatalf("callback url must reuse the start redirect_uri\n got: %q\nwant prefix: %q", callbackURL, authorizeRedirect)
+	}
+	if want := authorizeRedirect + "?" + rawQuery; callbackURL != want {
+		t.Fatalf("callback url must forward the IdP query verbatim\n got: %q\nwant: %q", callbackURL, want)
 	}
 }
