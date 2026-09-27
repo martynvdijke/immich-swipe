@@ -1,3 +1,10 @@
+## [1.11.12](https://github.com/martynvdijke/immich-swipe/compare/v1.11.11...v1.11.12) (2026-09-27)
+
+
+### Bug Fixes
+
+* **oauth:** forward IdP callback query verbatim (RFC 9207 iss) ([2fb2488](https://github.com/martynvdijke/immich-swipe/commit/2fb24880ca283adca0f28d3b791ae6eba1712048))
+
 ## [1.11.11](https://github.com/martynvdijke/immich-swipe/compare/v1.11.10...v1.11.11) (2026-09-26)
 
 
