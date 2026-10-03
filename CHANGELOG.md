@@ -1,3 +1,10 @@
+# [1.12.0](https://github.com/martynvdijke/immich-swipe/compare/v1.11.17...v1.12.0) (2026-10-03)
+
+
+### Features
+
+* **auth:** add email password reset and admin email settings ([917ac8a](https://github.com/martynvdijke/immich-swipe/commit/917ac8ae6ba652f7a619a808f9109e6fccf7f785))
+
 ## [1.11.17](https://github.com/martynvdijke/immich-swipe/compare/v1.11.16...v1.11.17) (2026-10-02)
 
 
