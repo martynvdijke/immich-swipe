@@ -34,3 +34,6 @@ server/server
 *.sw?
 openspec/
 .opencode/
+
+# Zensical build output
+site/
