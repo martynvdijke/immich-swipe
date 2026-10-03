@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useEmailSettingsStore } from '@/stores/emailSettings'
 import { useObservabilityStore } from '@/stores/observability'
 import { useUiStore } from '@/stores/ui'
 import { validateObservabilitySettings, type ObservabilitySettings } from '@/types/observability'
@@ -10,6 +11,7 @@ import { initOtel } from '@/composables/useOtel'
 const store = useObservabilityStore()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
+const emailStore = useEmailSettingsStore()
 
 // Local editable copy — only persisted on Save, so invalid input never
 // overwrites the active (persisted) configuration.
@@ -83,6 +85,71 @@ async function saveApiKey() {
   } else {
     apiKeyError.value = result.error
   }
+}
+
+// ── Account email ───────────────────────────────────────────────────────
+const accountEmail = ref('')
+const accountEmailError = ref('')
+const accountEmailSaving = ref(false)
+const accountEmailSaved = ref(false)
+async function saveAccountEmail() {
+  accountEmailError.value = ''
+  if (!accountEmail.value.trim() || !accountEmail.value.includes('@')) {
+    accountEmailError.value = 'Please enter a valid email'
+    return
+  }
+  accountEmailSaving.value = true
+  const result = await authStore.setAccountEmail(accountEmail.value.trim())
+  accountEmailSaving.value = false
+  if (result.ok) {
+    accountEmailSaved.value = true
+    accountEmail.value = ''
+    uiStore.toast('Email saved', 'success', 1500)
+    setTimeout(() => (accountEmailSaved.value = false), 2000)
+  } else {
+    accountEmailError.value = result.error
+  }
+}
+
+// ── Email / SMTP ─────────────────────────────────────────────────────────
+onMounted(() => { if (authStore.isLoggedIn) emailStore.fetch() })
+const emailDraft = ref({ host: '', port: 0, user: '', pass: '', from: '', tls: 'starttls' })
+const emailError = ref('')
+const emailSaving = ref(false)
+const emailSaved = ref(false)
+const testEmailTo = ref('')
+const testEmailSending = ref(false)
+const testEmailResult = ref('')
+watch(() => emailStore.host, () => {
+  emailDraft.value.host = emailStore.host
+  emailDraft.value.port = emailStore.port
+  emailDraft.value.user = emailStore.user
+  emailDraft.value.from = emailStore.from
+  emailDraft.value.tls = emailStore.tls || 'starttls'
+}, { immediate: true })
+async function saveEmailSettings() {
+  emailError.value = ''
+  if (!emailDraft.value.host.trim()) { emailError.value = 'SMTP host is required'; return }
+  emailSaving.value = true
+  try {
+    await emailStore.save({ host: emailDraft.value.host.trim(), port: emailDraft.value.port, user: emailDraft.value.user.trim(), pass: emailDraft.value.pass, from: emailDraft.value.from.trim(), tls: emailDraft.value.tls })
+    emailSaved.value = true
+    uiStore.toast('Email settings saved', 'success', 1500)
+    setTimeout(() => (emailSaved.value = false), 2000)
+  } catch (e: unknown) {
+    emailError.value = e instanceof Error ? e.message : 'Save failed'
+  } finally { emailSaving.value = false }
+}
+async function sendTestEmail() {
+  testEmailResult.value = ''
+  if (!testEmailTo.value.includes('@')) { testEmailResult.value = 'Enter a valid email'; return }
+  testEmailSending.value = true
+  try {
+    await emailStore.sendTest(testEmailTo.value.trim())
+    testEmailResult.value = 'Test email sent ✓'
+  } catch (e: unknown) {
+    testEmailResult.value = e instanceof Error ? e.message : 'Failed'
+  } finally { testEmailSending.value = false }
 }
 
 // Keep draft in sync when the active settings change (e.g. re-login as
@@ -352,6 +419,42 @@ onBeforeUnmount(() => {
         <template v-else-if="umami.ready.value">Script loaded and tracking active.</template>
         <template v-else>Not loaded.</template>
       </p>
+    </section>
+
+    <!-- Email / SMTP -->
+    <section class="rounded-2xl shadow-lg border p-5 mb-6" :class="uiStore.isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'">
+      <h2 class="font-semibold" :class="uiStore.isDarkMode ? 'text-white' : 'text-gray-900'">Email / SMTP</h2>
+      <p class="text-xs mt-0.5 mb-4" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-500'">Configure SMTP for password reset emails. Env vars override these settings.</p>
+      <div v-if="emailStore.fromEnv" class="text-xs text-amber-600 mb-3">Email is configured via environment variables (SMTP_HOST etc.) and cannot be changed here.</div>
+      <div class="space-y-3">
+        <div><label class="block text-sm mb-1">SMTP host</label><input v-model="emailDraft.host" :disabled="emailStore.fromEnv" data-testid="smtp-host" class="w-full px-3 py-2 rounded-lg border text-sm" /></div>
+        <div><label class="block text-sm mb-1">SMTP port</label><input v-model.number="emailDraft.port" type="number" :disabled="emailStore.fromEnv" data-testid="smtp-port" class="w-full px-3 py-2 rounded-lg border text-sm" /></div>
+        <div><label class="block text-sm mb-1">SMTP user</label><input v-model="emailDraft.user" :disabled="emailStore.fromEnv" data-testid="smtp-user" class="w-full px-3 py-2 rounded-lg border text-sm" /></div>
+        <div><label class="block text-sm mb-1">SMTP password <span v-if="emailStore.hasPassword" class="opacity-60">(saved)</span></label><input v-model="emailDraft.pass" type="password" :disabled="emailStore.fromEnv" data-testid="smtp-pass" class="w-full px-3 py-2 rounded-lg border text-sm" /></div>
+        <div><label class="block text-sm mb-1">From address</label><input v-model="emailDraft.from" :disabled="emailStore.fromEnv" data-testid="smtp-from" class="w-full px-3 py-2 rounded-lg border text-sm" /></div>
+        <div><label class="block text-sm mb-1">TLS</label><select v-model="emailDraft.tls" :disabled="emailStore.fromEnv" data-testid="smtp-tls" class="w-full px-3 py-2 rounded-lg border text-sm"><option value="starttls">STARTTLS</option><option value="ssl">SSL</option><option value="none">None</option></select></div>
+      </div>
+      <p v-if="emailError" class="text-xs text-red-500 mt-2">{{ emailError }}</p>
+      <div class="flex items-center gap-3 mt-4">
+        <button type="button" data-testid="email-save-btn" @click="saveEmailSettings" :disabled="emailSaving || emailStore.fromEnv" class="px-4 py-2 rounded-full text-sm font-medium border bg-indigo-600 text-white disabled:opacity-40">Save SMTP</button>
+        <span v-if="emailSaved" class="text-sm text-green-600">Saved ✓</span>
+      </div>
+      <div class="mt-4 flex gap-2">
+        <input v-model="testEmailTo" placeholder="test@example.com" data-testid="smtp-test-to" class="flex-1 px-3 py-2 rounded-lg border text-sm" />
+        <button type="button" @click="sendTestEmail" :disabled="testEmailSending" data-testid="smtp-test-btn" class="px-4 py-2 rounded-full text-sm border disabled:opacity-40">Send test</button>
+      </div>
+      <p v-if="testEmailResult" class="text-xs mt-2">{{ testEmailResult }}</p>
+
+      <div class="mt-6">
+        <h3 class="font-medium text-sm mb-1">Account email</h3>
+        <p class="text-xs mb-2 opacity-70">Used for password reset. Set it if it is missing.</p>
+        <div class="flex gap-2">
+          <input v-model="accountEmail" placeholder="you@example.com" data-testid="account-email" class="flex-1 px-3 py-2 rounded-lg border text-sm" />
+          <button type="button" @click="saveAccountEmail" :disabled="accountEmailSaving" data-testid="account-email-save-btn" class="px-4 py-2 rounded-full text-sm border bg-indigo-600 text-white">Save email</button>
+        </div>
+        <p v-if="accountEmailError" class="text-xs text-red-500 mt-1">{{ accountEmailError }}</p>
+        <span v-if="accountEmailSaved" class="text-xs text-green-600">Saved ✓</span>
+      </div>
     </section>
 
     <!-- OpenTelemetry -->

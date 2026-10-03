@@ -48,10 +48,22 @@ type Config struct {
 	StatsFile     string // optional TRMNL stats persistence path ("" = memory only)
 	SessionDBFile string // optional IMMICH_SESSIONS_DB SQLite path ("" = in-memory sessions)
 	PublicURL     string // optional SWIPE_PUBLIC_URL override for the OAuth callback base URL ("" = derived from the request)
+	SMTPHost      string
+	SMTPPort      int
+	SMTPUser      string
+	SMTPPass      string
+	SMTPFrom      string
+	SMTPTLS       string // starttls|ssl|none
 	Users         []UserConfig
 }
 
 func loadConfig() Config {
+	smtpPort := 0
+	if v := os.Getenv("SMTP_PORT"); v != "" {
+		if n, err := fmt.Sscanf(v, "%d", &smtpPort); n == 0 || err != nil {
+			smtpPort = 0
+		}
+	}
 	cfg := Config{
 		ListenAddr:    getEnv("LISTEN_ADDR", ":8080"),
 		StaticDir:     getEnv("STATIC_DIR", "./dist"),
@@ -59,6 +71,12 @@ func loadConfig() Config {
 		StatsFile:     os.Getenv("TRMNL_STATS_FILE"),
 		SessionDBFile: os.Getenv("IMMICH_SESSIONS_DB"),
 		PublicURL:     os.Getenv("SWIPE_PUBLIC_URL"),
+		SMTPHost:      os.Getenv("SMTP_HOST"),
+		SMTPPort:      smtpPort,
+		SMTPUser:      os.Getenv("SMTP_USER"),
+		SMTPPass:      os.Getenv("SMTP_PASS"),
+		SMTPFrom:      os.Getenv("SMTP_FROM"),
+		SMTPTLS:       strings.ToLower(strings.TrimSpace(getEnv("SMTP_TLS", ""))),
 	}
 	for i := 1; ; i++ {
 		// Primary naming: IMMICH_API_KEY_<N>_NAME / IMMICH_API_KEY_<N>_KEY
@@ -435,6 +453,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case path == "/api/auth/account/apikey":
 		s.authMiddleware(http.HandlerFunc(s.apiKeyHandler)).ServeHTTP(w, r)
+
+	case path == "/api/auth/forgot-password":
+		s.forgotPasswordHandler(w, r)
+
+	case path == "/api/auth/reset-password":
+		s.resetPasswordHandler(w, r)
+
+	case path == "/api/auth/account/email":
+		s.authMiddleware(http.HandlerFunc(s.accountEmailHandler)).ServeHTTP(w, r)
+
+	case path == "/api/admin/email/test":
+		s.authMiddleware(http.HandlerFunc(s.emailTestHandler)).ServeHTTP(w, r)
+
+	case path == "/api/admin/email":
+		if r.Method == http.MethodGet {
+			s.authMiddleware(http.HandlerFunc(s.emailSettingsGetHandler)).ServeHTTP(w, r)
+		} else {
+			s.authMiddleware(http.HandlerFunc(s.emailSettingsPutHandler)).ServeHTTP(w, r)
+		}
 
 	case path == "/api/trmnl/stats":
 		// Public Trmnl e-ink polling endpoint. Registered before the /api/
@@ -943,6 +980,11 @@ func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		userName = loginResult.UserEmail
 	}
 
+	// Persist email on account store if available (for password reset)
+	if loginResult.UserEmail != "" {
+		// Create or update account email without clobbering password/apiKey
+		s.accounts.SetEmail(pending.ServerURL, userName, loginResult.UserEmail)
+	}
 	token := s.session.CreateAccessToken(userName, loginResult.AccessToken, pending.ServerURL, loginResult.UserEmail, loginResult.UserID)
 	oneTime := generateToken()
 	s.oauthMu.Lock()

@@ -28,6 +28,7 @@ type Account struct {
 	UserName     string
 	PasswordHash *string // nil = migrated account, no password set yet
 	APIKey       string
+	Email        *string
 	CreatedAt    time.Time
 }
 
@@ -51,6 +52,28 @@ CREATE TABLE IF NOT EXISTS accounts (
 	PRIMARY KEY (server_url, user_name)
 );`
 
+func ensureAccountsEmailColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(accounts)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			continue
+		}
+		if name == "email" {
+			return nil
+		}
+	}
+	_, err = db.Exec(`ALTER TABLE accounts ADD COLUMN email TEXT`)
+	return err
+}
+
 // pbkdf2Iterations is the PBKDF2-HMAC-SHA256 work factor for password hashing.
 const pbkdf2Iterations = 600000
 
@@ -69,20 +92,26 @@ func NewAccountStore(db *sql.DB, envUsers []UserConfig, defaultServerURL string)
 		if _, err := db.Exec(accountsSchema); err != nil {
 			log.Printf("Warning: cannot migrate account database: %v (continuing in-memory)", err)
 			s.db = nil
+		} else {
+			// Safe migration: add email column if missing
+			if err := ensureAccountsEmailColumn(db); err != nil {
+				log.Printf("Warning: cannot migrate accounts email column: %v", err)
+			}
 		}
 	}
 
 	if s.db != nil {
-		rows, err := db.Query(`SELECT server_url, user_name, password_hash, api_key, created_at FROM accounts`)
+		rows, err := db.Query(`SELECT server_url, user_name, password_hash, api_key, email, created_at FROM accounts`)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
 				var (
 					serverURL, userName, apiKey string
 					passwordHash                sql.NullString
+					email                       sql.NullString
 					createdAt                   int64
 				)
-				if err := rows.Scan(&serverURL, &userName, &passwordHash, &apiKey, &createdAt); err != nil {
+				if err := rows.Scan(&serverURL, &userName, &passwordHash, &apiKey, &email, &createdAt); err != nil {
 					log.Printf("Warning: skipping malformed account row: %v", err)
 					continue
 				}
@@ -95,6 +124,10 @@ func NewAccountStore(db *sql.DB, envUsers []UserConfig, defaultServerURL string)
 				if passwordHash.Valid {
 					hash := passwordHash.String
 					account.PasswordHash = &hash
+				}
+				if email.Valid && email.String != "" {
+					e := email.String
+					account.Email = &e
 				}
 				s.mem[accountKey(serverURL, userName)] = account
 			}
@@ -248,6 +281,61 @@ func (s *AccountStore) SetAPIKey(serverURL, userName, apiKey string) {
 	if err != nil {
 		log.Printf("Warning: cannot persist API key for account %q: %v", userName, err)
 	}
+}
+
+// SetEmail stores the email for an account (creates if missing).
+func (s *AccountStore) SetEmail(serverURL, userName, email string) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return
+	}
+	s.mu.Lock()
+	if existing, ok := s.mem[accountKey(serverURL, userName)]; ok {
+		e := email
+		existing.Email = &e
+	} else {
+		e := email
+		s.mem[accountKey(serverURL, userName)] = &Account{
+			ServerURL: serverURL,
+			UserName:  userName,
+			Email:     &e,
+			CreatedAt: time.Now(),
+		}
+	}
+	s.mu.Unlock()
+	if s.db == nil {
+		return
+	}
+	_, err := s.db.Exec(`INSERT INTO accounts (server_url, user_name, password_hash, api_key, email, created_at) VALUES (?, ?, NULL, '', ?, ?) ON CONFLICT(server_url, user_name) DO UPDATE SET email = excluded.email`, serverURL, userName, email, time.Now().Unix())
+	if err != nil {
+		log.Printf("Warning: cannot persist email for account %q: %v", userName, err)
+	}
+}
+
+// GetByEmail finds an account by email on a given serverURL (case-insensitive).
+func (s *AccountStore) GetByEmail(serverURL, email string) (Account, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, acc := range s.mem {
+		if acc.ServerURL != serverURL {
+			continue
+		}
+		if acc.Email != nil && strings.EqualFold(*acc.Email, email) {
+			return *acc, true
+		}
+	}
+	return Account{}, false
+}
+
+// All returns a copy of all accounts (for email lookup fallback).
+func (s *AccountStore) All() []Account {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Account, 0, len(s.mem))
+	for _, a := range s.mem {
+		out = append(out, *a)
+	}
+	return out
 }
 
 // hashPassword derives a PBKDF2-HMAC-SHA256 hash in the format

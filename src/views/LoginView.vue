@@ -254,6 +254,9 @@ async function handleSubmit() {
                 : 'bg-white border-gray-300 text-black placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500'"
             />
           </div>
+          <div class="text-right">
+            <a href="/forgot-password" class="text-xs underline opacity-70">Forgot password?</a>
+          </div>
         </template>
 
         <!-- Create account fields -->

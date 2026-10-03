@@ -456,6 +456,57 @@ export const useAuthStore = defineStore('auth', () => {
     return sessionRecords.value.length > 0
   }
 
+  async function forgotPassword(serverUrl: string, userName: string): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverUrl, userName }),
+      })
+      if (!res.ok) {
+        const { error } = await parseLoginResult(res, 'Could not request password reset')
+        return { ok: false, error }
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
+  async function resetPassword(token: string, newPassword: string): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, newPassword }),
+      })
+      if (!res.ok) {
+        const { error, code } = await parseLoginResult(res, 'Could not reset password')
+        return { ok: false, error, code }
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
+  async function setAccountEmail(email: string): Promise<LoginResult> {
+    try {
+      const res = await fetch('/api/auth/account/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader.value },
+        body: JSON.stringify({ email }),
+      })
+      if (!res.ok) {
+        const { error } = await parseLoginResult(res, 'Could not save email')
+        return { ok: false, error }
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
   // Initialize on store creation
   init()
 
@@ -486,5 +537,8 @@ export const useAuthStore = defineStore('auth', () => {
     logout,
     logoutSession,
     removeActiveSession,
+    forgotPassword,
+    resetPassword,
+    setAccountEmail,
   }
 })

@@ -23,6 +23,16 @@ const router = createRouter({
       component: () => import('@/views/LoginView.vue'),
     },
     {
+      path: '/forgot-password',
+      name: 'forgot-password',
+      component: () => import('@/views/ForgotPasswordView.vue'),
+    },
+    {
+      path: '/reset-password',
+      name: 'reset-password',
+      component: () => import('@/views/ResetPasswordView.vue'),
+    },
+    {
       // User selection is part of the login page now. Logged-out visitors are
       // sent to /login by the guard; logged-in visitors reach the home view.
       path: '/select-user',
