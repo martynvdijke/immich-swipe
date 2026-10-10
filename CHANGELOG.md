@@ -1,3 +1,5 @@
+## [1.12.8](https://github.com/martynvdijke/immich-swipe/compare/v1.12.7...v1.12.8) (2026-10-10)
+
 ## [1.12.7](https://github.com/martynvdijke/immich-swipe/compare/v1.12.6...v1.12.7) (2026-10-09)
 
 ## [1.12.6](https://github.com/martynvdijke/immich-swipe/compare/v1.12.5...v1.12.6) (2026-10-08)
