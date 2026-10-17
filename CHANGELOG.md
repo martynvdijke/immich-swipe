@@ -1,3 +1,10 @@
+## [1.13.2](https://github.com/martynvdijke/immich-swipe/compare/v1.13.1...v1.13.2) (2026-10-17)
+
+
+### Bug Fixes
+
+* **mobile:** ship an empty Server URL field instead of a dev default ([3a85e9e](https://github.com/martynvdijke/immich-swipe/commit/3a85e9e2a45030e46ef73efca9ce79a87cb190a6))
+
 ## [1.13.1](https://github.com/martynvdijke/immich-swipe/compare/v1.13.0...v1.13.1) (2026-10-17)
 
 
