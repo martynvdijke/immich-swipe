@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Required for self-hosted HTTP Immich servers on a LAN (e.g. http://10.0.2.2:8080).
+     Android blocks cleartext traffic by default (API 28+). For anything
+     internet-exposed, use HTTPS. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
