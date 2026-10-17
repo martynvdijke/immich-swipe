@@ -1,3 +1,10 @@
+# [1.13.0](https://github.com/martynvdijke/immich-swipe/compare/v1.12.14...v1.13.0) (2026-10-17)
+
+
+### Features
+
+* **mobile:** add Flutter Android app with non-blocking CI and APK release ([69f7aa1](https://github.com/martynvdijke/immich-swipe/commit/69f7aa1d0518edceac4e14e39e2c971680f25191))
+
 ## [1.12.14](https://github.com/martynvdijke/immich-swipe/compare/v1.12.13...v1.12.14) (2026-10-16)
 
 ## [1.12.13](https://github.com/martynvdijke/immich-swipe/compare/v1.12.12...v1.12.13) (2026-10-15)
