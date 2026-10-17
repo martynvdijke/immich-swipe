@@ -12,7 +12,7 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final _serverCtrl = TextEditingController(text: 'http://10.0.2.2:8080');
+  final _serverCtrl = TextEditingController();
   final _userCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   final _apiKeyCtrl = TextEditingController();
@@ -34,14 +34,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Future<void> _submit() async {
+    final url = _serverCtrl.text.trim();
+    final user = _userCtrl.text.trim();
+    final pass = _passCtrl.text;
+    // The server URL field ships empty (no dev-loopback default), so validate
+    // before hitting the network instead of failing with a dio error.
+    if (url.isEmpty || user.isEmpty || pass.isEmpty) {
+      setState(() => _error = 'Server URL, user name and password are required');
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
-      final url = _serverCtrl.text.trim();
-      final user = _userCtrl.text.trim();
-      final pass = _passCtrl.text;
       if (_createMode) {
         await ref.read(sessionProvider.notifier).createAccount(
             serverUrl: url,
@@ -114,6 +120,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Future<void> _oauthFinish() async {
     final code = _oauthCodeCtrl.text.trim();
     if (code.isEmpty) return;
+    if (_serverCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Enter your server URL first');
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -229,7 +239,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               TextField(
                   controller: _serverCtrl,
                   decoration: const InputDecoration(
-                      labelText: 'Server URL', hintText: 'http://10.0.2.2:8080', border: OutlineInputBorder())),
+                      labelText: 'Server URL', hintText: 'https://immich.example.com', border: OutlineInputBorder())),
               const SizedBox(height: 12),
               TextField(
                   controller: _userCtrl,

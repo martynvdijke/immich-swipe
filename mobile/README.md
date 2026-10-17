@@ -13,7 +13,7 @@ flutter test
 flutter run
 ```
 
-Default server URL field is `http://10.0.2.2:8080` (Android emulator loopback). For a physical device use `http://<host-ip>:8080`.
+The Server URL field ships **empty** with an example hint (`https://immich.example.com`) — there is no hardcoded default, so a release build never points at a developer machine. When running against a local backend on the Android emulator type `http://10.0.2.2:8080` (emulator loopback to the host); for a physical device use `http://<host-ip>:8080`.
 
 ## Local Android build (verified)
 
