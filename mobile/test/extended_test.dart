@@ -23,6 +23,19 @@ class _FakeAsset extends AssetRepository {
   @override Future<List<ImmichAsset>> searchRandom({required int size, bool imageOnly = false}) async => [];
   @override Future<Uint8List> fetchThumbnail(String id, {String size = 'preview'}) async => throw Exception('no thumb');
 }
+/// Records thumbnail fetches so we can assert the deck actually prefetches
+/// images after an ASYNC deck load (regression for the "stuck on Loading…" bug).
+class _RecordingAsset extends AssetRepository {
+  _RecordingAsset() : super(Dio());
+  int thumbCalls = 0;
+  List<String> thumbIds = [];
+  @override Future<List<ImmichAsset>> searchRandom({required int size, bool imageOnly = false}) async => [];
+  @override Future<Uint8List> fetchThumbnail(String id, {String size = 'preview'}) async {
+    thumbCalls++;
+    thumbIds.add(id);
+    return _tinyPng;
+  }
+}
 class _FakeAlbum extends AlbumRepository {
   _FakeAlbum() : super(Dio());
   List<(String,String)> added = [];
@@ -184,6 +197,29 @@ void main() {
     await t.pump();
     await t.pump(const Duration(milliseconds: 300));
     expect(find.text('File'), findsOneWidget);
+  });
+
+  testWidgets('ReviewScreen prefetches thumbnails after async deck load (regression)', (t) async {
+    final repo = _RecordingAsset();
+    final container = ProviderContainer(overrides: [
+      dioProvider.overrideWithValue(_stubDio()),
+      assetRepositoryProvider.overrideWithValue(repo),
+      albumRepositoryProvider.overrideWithValue(_FakeAlbum()),
+      secureStoreProvider.overrideWithValue(_FakeStore()),
+    ]);
+    addTearDown(container.dispose);
+    await t.pumpWidget(UncontrolledProviderScope(container: container, child: const MaterialApp(home: ReviewScreen())));
+    await t.pump(const Duration(milliseconds: 100));
+    // deck still empty -> nothing prefetched yet
+    expect(repo.thumbCalls, 0);
+    final asset = ImmichAsset(id: 't1', type: 'IMAGE', originalFileName: 'x.jpg', fileCreatedAt: '2024-01-01T00:00:00Z', isFavorite: false);
+    container.read(reviewProvider.notifier).state = ReviewState(assets: [asset], reviewedIds: {}, history: []);
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 200));
+    // the deck arrived asynchronously: images MUST be requested now
+    expect(repo.thumbCalls, greaterThanOrEqualTo(1));
+    expect(repo.thumbIds, contains('t1'));
+    expect(find.byType(Image), findsWidgets);
   });
 
   testWidgets('LoginScreen renders form and toggles create mode', (t) async {

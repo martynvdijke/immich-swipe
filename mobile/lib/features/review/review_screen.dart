@@ -296,8 +296,12 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     final stats = ref.watch(statsProvider);
     final albumsAsync = ref.watch(quickAlbumsProvider);
 
-    // Keep caches bounded even if build is called outside didChangeDependencies
-    // (post-frame handles eviction; avoid side-effects here)
+    // FIX: deck loads asynchronously AFTER mount, so didChangeDependencies alone
+    // never re-ran the prefetch and no thumbnail was ever requested. React to
+    // every deck change instead (post-frame keeps build side-effect free).
+    ref.listen(reviewProvider, (_, _) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _maybePrefetch());
+    });
 
     final scheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
