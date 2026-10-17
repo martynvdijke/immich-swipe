@@ -1,3 +1,10 @@
+## [1.13.1](https://github.com/martynvdijke/immich-swipe/compare/v1.13.0...v1.13.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **mobile:** load deck thumbnails after async load ([121cce1](https://github.com/martynvdijke/immich-swipe/commit/121cce144c56479c688a0f5f7b8f3c0083471d3e))
+
 # [1.13.0](https://github.com/martynvdijke/immich-swipe/compare/v1.12.14...v1.13.0) (2026-10-17)
 
 
