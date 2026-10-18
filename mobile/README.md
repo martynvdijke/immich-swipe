@@ -113,9 +113,30 @@ All swipe-session calls are relative to `<serverUrl>/api` with header `Authoriza
 - `android:label` = `Immich Swipe`
 - `INTERNET` permission in `AndroidManifest.xml`
 
-## SSO Limitation
+## SSO (in-app browser)
 
-`GET /api/auth/config` drives whether the SSO button is shown. Tapping it calls `POST /api/auth/oauth/start` and shows the returned `url` in a dialog with Copy; the user completes the flow in a browser and pastes the one-time `code` into the field which calls `POST /api/auth/oauth/finish`. No in-app webview / deep-link handler is bundled to keep dependencies light — document for the designer to upgrade if desired.
+`GET /api/auth/config` drives whether the SSO button is shown. Availability is
+checked for the URL currently in the Server URL field (on focus loss) as well as
+after a session restore, so a fresh install can use SSO too.
+
+Tapping the button calls `POST /api/auth/oauth/start` and runs the returned
+Immich authorize URL inside `OAuthWebViewScreen` (`webview_flutter`), an in-app
+browser. After the user authenticates, the IdP redirects to
+`/api/auth/oauth/callback`, which the Go backend answers with
+`302 <swipe>/login?oauthCode=<code>`; the screen intercepts that navigation
+(the SPA route is never loaded), pops the one-time code, and the login screen
+exchanges it via `POST /api/auth/oauth/finish`.
+
+Fallbacks, kept deliberately:
+
+- The WebView's app bar has **Copy SSO URL**; the manual *One-time OAuth code*
+  field plus **Finish SSO login** button still work for providers that refuse to
+  render in an embedded browser.
+- If the start call returns `oauth_not_enabled`, the error is surfaced inline
+  instead of opening the browser.
+
+Helpers live in `lib/core/oauth.dart` (`oauthCodeFromUrl`, `oauthErrorFromUrl`)
+and are unit-tested without a platform WebView.
 
 ## Tests
 

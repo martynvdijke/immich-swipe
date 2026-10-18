@@ -125,10 +125,13 @@ class SessionNotifier extends StateNotifier<SessionState> {
     state = SessionState(session: s, oauthConfig: state.oauthConfig, needsApiKey: false);
   }
 
-  Future<Map<String, dynamic>> oauthStart() async {
+  Future<Map<String, dynamic>> oauthStart({String? serverUrl}) async {
     final s = state.session;
-    final dio = _dioFor(s?.serverUrl ?? 'http://localhost:8080', s?.token);
-    return AuthRepository(dio).oauthStart(serverUrl: s?.serverUrl);
+    // On the login screen there is no session yet, so the caller-supplied URL
+    // (the field the user typed) must be used instead of the localhost fallback.
+    final url = serverUrl ?? s?.serverUrl ?? 'http://localhost:8080';
+    final dio = _dioFor(url, s?.token);
+    return AuthRepository(dio).oauthStart(serverUrl: url);
   }
 
   Future<void> oauthFinish(String code, {String? serverUrl}) async {

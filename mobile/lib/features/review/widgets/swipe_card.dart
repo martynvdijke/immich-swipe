@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../../../models/immich_asset.dart';
+import '../../../core/format.dart';
 
 /// Pure presentation card for a single asset.
 /// Loads bytes via Image.memory (never Image.network) — caller supplies bytes.
@@ -112,7 +113,7 @@ class SwipeCard extends StatelessWidget {
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
                   const Icon(Icons.videocam_rounded, size: 14, color: Colors.white),
                   const SizedBox(width: 4),
-                  Text(asset.duration ?? 'Video',
+                  Text(formatDuration(asset.duration),
                       style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
                 ]),
               ),

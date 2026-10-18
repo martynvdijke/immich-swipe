@@ -1,9 +1,9 @@
 // ignore_for_file: deprecated_member_use, use_build_context_synchronously
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/providers.dart';
 import '../../core/api_client.dart';
+import 'oauth_webview_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -22,9 +22,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   String? _error;
   bool _needsApiKey = false;
   bool _obscure = true;
+  final _serverFocus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    // OAuth availability comes from GET /api/auth/config, which is otherwise only
+    // fetched after a session exists — so a fresh install would never surface the
+    // SSO button. Check the typed server as soon as the user leaves the field.
+    _serverFocus.addListener(() {
+      if (!_serverFocus.hasFocus) _checkOauthConfig();
+    });
+  }
+
+  void _checkOauthConfig() {
+    final url = _serverCtrl.text.trim();
+    if (url.isEmpty) return;
+    ref.read(sessionProvider.notifier).fetchConfigFor(url);
+  }
 
   @override
   void dispose() {
+    _serverFocus.dispose();
     _serverCtrl.dispose();
     _userCtrl.dispose();
     _passCtrl.dispose();
@@ -86,35 +105,48 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     }
   }
 
+  /// Starts the SSO handoff: `POST /api/auth/oauth/start` returns the Immich
+  /// authorize URL, which we run in an in-app browser. The backend callback
+  /// redirects to `<swipe>/login?oauthCode=<code>`; the WebView screen intercepts
+  /// that navigation and returns the one-time code, which we then exchange for a
+  /// session via `POST /api/auth/oauth/finish`.
   Future<void> _oauthStart() async {
+    final serverUrl = _serverCtrl.text.trim();
+    if (serverUrl.isEmpty) {
+      setState(() => _error = 'Enter your server URL first');
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
     });
+    String? code;
     try {
-      final res = await ref.read(sessionProvider.notifier).oauthStart();
-      final url = res['url'] as String? ?? '';
+      final res = await ref.read(sessionProvider.notifier).oauthStart(serverUrl: serverUrl);
+      final authorizeUrl = res['url'] as String? ?? '';
+      if (authorizeUrl.isEmpty) {
+        setState(() => _error = 'oauth_not_enabled: server returned no authorize URL');
+        return;
+      }
       if (!mounted) return;
-      await showDialog(
-          context: context,
-          builder: (c) => AlertDialog(
-                title: const Text('SSO Login'),
-                content: SelectableText('Open this URL in a browser:\n\n$url\n\nThen paste the one-time code below.'),
-                actions: [
-                  TextButton(
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: url));
-                        Navigator.pop(c);
-                      },
-                      child: const Text('Copy URL')),
-                  TextButton(onPressed: () => Navigator.pop(c), child: const Text('Close')),
-                ],
-              ));
+      code = await Navigator.of(context).push<String>(MaterialPageRoute(
+        builder: (_) => OAuthWebViewScreen(
+          startUrl: authorizeUrl,
+          buttonText: ref.read(sessionProvider).oauthConfig?.oauthButtonText ?? 'SSO',
+        ),
+      ));
     } on AppException catch (e) {
       setState(() => _error = '${e.code}: ${e.message}');
+    } catch (e) {
+      setState(() => _error = e.toString());
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+    if (!mounted) return;
+    // Backing out of the WebView leaves the manual paste path available.
+    if (code == null || code.isEmpty) return;
+    _oauthCodeCtrl.text = code;
+    await _oauthFinish();
   }
 
   Future<void> _oauthFinish() async {
@@ -238,6 +270,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               const SizedBox(height: 20),
               TextField(
                   controller: _serverCtrl,
+                  focusNode: _serverFocus,
                   decoration: const InputDecoration(
                       labelText: 'Server URL', hintText: 'https://immich.example.com', border: OutlineInputBorder())),
               const SizedBox(height: 12),
@@ -310,7 +343,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 const SizedBox(height: 10),
                 TextField(
                     controller: _oauthCodeCtrl,
-                    decoration: const InputDecoration(labelText: 'Paste one-time OAuth code', border: OutlineInputBorder())),
+                    decoration: const InputDecoration(
+                        labelText: 'One-time OAuth code (fallback)', border: OutlineInputBorder())),
                 const SizedBox(height: 8),
                 SizedBox(
                   height: 48,
@@ -318,7 +352,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                    'This build shows the SSO URL to open externally. Complete the flow in a browser and paste the code above.',
+                    'Opens the provider sign-in page in the app and finishes the handoff automatically. '
+                    'If your provider blocks the in-app browser, copy the SSO URL from there and paste the code above.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 11)),
               ] else
                 Padding(
