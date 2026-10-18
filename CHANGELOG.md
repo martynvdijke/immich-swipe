@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/martynvdijke/immich-swipe/compare/v1.14.0...v1.14.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **mobile:** stop downloading video originals before the user asks ([0adb467](https://github.com/martynvdijke/immich-swipe/commit/0adb4676e873c51042c2d3c3e9ff5a71d8960e25))
+
 # [1.14.0](https://github.com/martynvdijke/immich-swipe/compare/v1.13.2...v1.14.0) (2026-10-18)
 
 
