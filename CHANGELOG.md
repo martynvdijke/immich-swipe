@@ -1,3 +1,10 @@
+## [1.14.3](https://github.com/martynvdijke/immich-swipe/compare/v1.14.2...v1.14.3) (2026-10-18)
+
+
+### Bug Fixes
+
+* **deps:** update dependency cupertino_icons to v2 ([#74](https://github.com/martynvdijke/immich-swipe/issues/74)) ([bf0bb65](https://github.com/martynvdijke/immich-swipe/commit/bf0bb6517e9b865f78e4a4a82592a3631d543e83))
+
 ## [1.14.2](https://github.com/martynvdijke/immich-swipe/compare/v1.14.1...v1.14.2) (2026-10-18)
 
 ## [1.14.1](https://github.com/martynvdijke/immich-swipe/compare/v1.14.0...v1.14.1) (2026-10-18)
