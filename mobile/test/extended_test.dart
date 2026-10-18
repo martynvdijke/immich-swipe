@@ -10,6 +10,7 @@ import 'package:immich_swipe/features/review/review_screen.dart';
 import 'package:immich_swipe/features/auth/login_screen.dart';
 import 'package:immich_swipe/models/immich_album.dart';
 import 'package:immich_swipe/models/immich_asset.dart';
+import 'package:immich_swipe/models/session.dart';
 import 'package:immich_swipe/state/providers.dart';
 import 'package:immich_swipe/data/asset_repository.dart';
 import 'package:immich_swipe/data/album_repository.dart';
@@ -261,5 +262,47 @@ void main() {
     await t.tap(find.widgetWithText(FilledButton, 'Sign in'));
     await t.pumpAndSettle();
     expect(find.byIcon(Icons.error_outline_rounded), findsOneWidget);
+  });
+
+  testWidgets('SwipeCard shows a play affordance for a video with no player and a spinner while loading', (t) async {
+    final video = ImmichAsset(id: 'v1', type: 'VIDEO', originalFileName: 'clip.mp4', fileCreatedAt: '2024-01-01T00:00:00Z', isFavorite: false);
+    await t.pumpWidget(MaterialApp(home: Scaffold(body: SwipeCard(asset: video, imageBytes: _tinyPng))));
+    expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    await t.pumpWidget(MaterialApp(home: Scaffold(body: SwipeCard(asset: video, imageBytes: _tinyPng, videoLoading: true))));
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
+  });
+
+  testWidgets('ReviewScreen does not start video playback until the user taps (no eager original download)', (t) async {
+    final dio = _stubDio();
+    final container = ProviderContainer(overrides: [
+      dioProvider.overrideWithValue(dio),
+      assetRepositoryProvider.overrideWithValue(_FakeAsset()),
+      albumRepositoryProvider.overrideWithValue(_FakeAlbum()),
+      secureStoreProvider.overrideWithValue(_FakeStore()),
+    ]);
+    addTearDown(container.dispose);
+    await t.pumpWidget(UncontrolledProviderScope(container: container, child: const MaterialApp(home: ReviewScreen())));
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 100));
+    final video = ImmichAsset(id: 'v1', type: 'VIDEO', originalFileName: 'clip.mp4', fileCreatedAt: '2024-01-01T00:00:00Z', isFavorite: false);
+    container.read(reviewProvider.notifier).state = ReviewState(assets: [video], reviewedIds: {}, history: []);
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 50));
+    // idle: still-frame affordance only, and no failure surfaced => no player was created
+    expect(find.byIcon(Icons.play_arrow_rounded), findsWidgets);
+    expect(find.byType(SnackBar), findsNothing);
+    // an explicit tap is what starts playback: with a session present this
+    // reaches the player, which fails in the test environment (no plugin) and
+    // must report that failure instead of swallowing it.
+    container.read(sessionProvider.notifier).state = SessionState(
+      session: SessionInfo(serverUrl: 'http://example.com', token: 'tok', userName: 'u', mode: 'apiKey'),
+    );
+    await t.pump();
+    await t.tap(find.byIcon(Icons.play_arrow_rounded).first);
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 100));
+    expect(find.byType(SnackBar), findsOneWidget);
   });
 }

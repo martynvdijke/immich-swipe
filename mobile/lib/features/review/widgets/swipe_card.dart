@@ -7,10 +7,12 @@ import '../../../core/format.dart';
 /// Pure presentation card for a single asset.
 /// Loads bytes via Image.memory (never Image.network) — caller supplies bytes.
 class SwipeCard extends StatelessWidget {
-  const SwipeCard({super.key, required this.asset, this.imageBytes, this.videoController, this.onFavoriteToggle, this.onInfo});
+  const SwipeCard({super.key, required this.asset, this.imageBytes, this.videoController, this.videoLoading = false, this.onFavoriteToggle, this.onInfo});
   final ImmichAsset asset;
   final Uint8List? imageBytes;
   final VideoPlayerController? videoController;
+  /// True while the player for this video is being initialised after a tap.
+  final bool videoLoading;
   final VoidCallback? onFavoriteToggle;
   final VoidCallback? onInfo;
 
@@ -33,19 +35,7 @@ class SwipeCard extends StatelessWidget {
             ),
           ),
           // subtle play affordance when paused
-          if (!videoController!.value.isPlaying)
-            Center(
-              child: Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.45),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.8), width: 1.5),
-                ),
-                child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 32),
-              ),
-            ),
+          if (!videoController!.value.isPlaying && !videoLoading) _playOverlay(),
         ]),
       );
     } else if (imageBytes != null) {
@@ -97,6 +87,30 @@ class SwipeCard extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         child: Stack(fit: StackFit.expand, children: [
           media,
+
+          // Video with no player yet: the user taps to fetch the original and
+          // start playback, so nothing is downloaded before that tap.
+          if (asset.isVideo && !(videoController?.value.isInitialized ?? false) && !videoLoading) _playOverlay(),
+
+          // ...and a spinner while that fetch/initialise is in flight.
+          if (asset.isVideo && videoLoading)
+            Center(
+              child: Container(
+                width: 56,
+                height: 56,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.45),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.8), width: 1.5),
+                ),
+                child: const SizedBox(
+                  width: 26,
+                  height: 26,
+                  child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                ),
+              ),
+            ),
 
           // video badge
           if (asset.isVideo)
@@ -195,6 +209,21 @@ class SwipeCard extends StatelessWidget {
             ),
           ),
         ]),
+      ),
+    );
+  }
+
+  Widget _playOverlay() {
+    return Center(
+      child: Container(
+        width: 56,
+        height: 56,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.45),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white.withValues(alpha: 0.8), width: 1.5),
+        ),
+        child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 32),
       ),
     );
   }

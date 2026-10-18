@@ -100,7 +100,22 @@ All swipe-session calls are relative to `<serverUrl>/api` with header `Authoriza
 |---|---|---|---|
 | `LoginScreen` | `lib/features/auth/login_screen.dart` | `const LoginScreen()` — reads `sessionProvider` | No (stateful, handles auth) |
 | `ReviewScreen` | `lib/features/review/review_screen.dart` | `const ReviewScreen()` — `ConsumerStatefulWidget` | No (holds `CardSwiperController`, preloads, video controllers) |
-| `SwipeCard` | `lib/features/review/widgets/swipe_card.dart` | `const SwipeCard({required asset, imageBytes, videoController, onFavoriteToggle, onInfo})` | **Yes** — pure card, no providers |
+| `SwipeCard` | `lib/features/review/widgets/swipe_card.dart` | `const SwipeCard({required asset, imageBytes, videoController, videoLoading = false, onFavoriteToggle, onInfo})` | **Yes** — pure card, no providers |
+
+### Video playback
+
+The player is created **only from an explicit tap** on a video card (one tap initialises and starts
+playback; while it initialises the card shows a spinner, and a failure surfaces as a snack bar).
+`ReviewScreen` deliberately does **not** create video controllers while prefetching: creating one
+pulls the entire original file, so prefetching would download a full-size video merely because a
+video card reached the top of the deck. Thumbnails are still prefetched for the visible deck.
+
+Note (measured on the emulator rig against the mock backend): once a player exists, ExoPlayer
+Media3 re-opens the same `.../original` URL several times (six re-opens ~1 s apart, plus roughly one
+per loop during playback) even though each response delivers the complete body and the client never
+aborts. That was reproduced with a faststart and a non-faststart file, with buffered and streamed
+responses, and with/without `Content-Range`, and is not caused by this app's request pattern
+(ExoPlayer sends no `Range` header and there is exactly one player instance).
 | `StatsBar` | `lib/features/review/widgets/stats_bar.dart` | `const StatsBar({required kept, trashed, freedBytes})` | **Yes** |
 | `AlbumChips` | `lib/features/review/widgets/album_chips.dart` | `const AlbumChips({required albums, required onSelect})` | **Yes** |
 | `MyApp` | `lib/main.dart` | `const MyApp()` — switches `LoginScreen` vs `ReviewScreen` by `sessionProvider` | No |

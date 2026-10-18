@@ -58,11 +58,10 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     for (final a in review.assets.take(5)) {
       _ensureThumb(a);
     }
-    // lazily init video only for top card
-    final top = review.assets.first;
-    if (top.isVideo) {
-      _ensureVideo(top);
-    }
+    // Video is deliberately NOT initialised here. Creating the player pulls the
+    // whole original file, so prefetching it would download a full-size video
+    // just for a card reaching the top of the deck. Playback is initialised by
+    // the play affordance instead (see _toggleVideo).
     _pruneCaches(review.assets.map((e) => e.id).toSet());
   }
 
@@ -102,14 +101,24 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     } catch (_) {}
   }
 
-  Future<void> _ensureVideo(ImmichAsset a) async {
-    if (!a.isVideo || _videoControllers.containsKey(a.id) || _pendingVideo.contains(a.id)) return;
+  /// Initialises the player for [a] and returns whether a controller is ready.
+  /// Only call this from a user action: initialising downloads the original.
+  Future<bool> _ensureVideo(ImmichAsset a, {bool autoPlay = false}) async {
+    if (!a.isVideo) return false;
+    final existing = _videoControllers[a.id];
+    if (existing != null && existing.value.isInitialized) {
+      if (autoPlay) await existing.play();
+      if (mounted) setState(() {});
+      return true;
+    }
+    if (_pendingVideo.contains(a.id)) return false;
     final sess = ref.read(sessionProvider).session;
-    if (sess == null) return;
+    if (sess == null) return false;
     final serverUrl = sess.serverUrl;
     final token = sess.token;
-    if (serverUrl.isEmpty || token.isEmpty) return;
+    if (serverUrl.isEmpty || token.isEmpty) return false;
     _pendingVideo.add(a.id);
+    if (mounted) setState(() {});
     try {
       final uri = Uri.parse('$serverUrl/api/assets/${a.id}/original');
       final controller = VideoPlayerController.networkUrl(uri, httpHeaders: {'Authorization': 'Bearer $token'});
@@ -118,36 +127,48 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       await controller.setVolume(0);
       if (!mounted) {
         await controller.dispose();
-        return;
+        return false;
       }
       // verify asset still in deck and not already replaced
       if (_videoControllers.containsKey(a.id)) {
         await controller.dispose();
-        return;
+        return false;
       }
       setState(() => _videoControllers[a.id] = controller);
-    } catch (_) {
-      // silent fallback — remove pending so retry is possible
+      if (autoPlay) {
+        await controller.play();
+        if (mounted) setState(() {});
+      }
+      return true;
+    } catch (e) {
+      // Surface the failure: a silently dead play button is worse than an error.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not play ${a.originalFileName}')),
+        );
+      }
+      return false;
     } finally {
       _pendingVideo.remove(a.id);
+      if (mounted) setState(() {});
     }
   }
 
-  void _toggleVideo(String assetId) {
+  Future<void> _toggleVideo(String assetId) async {
     final c = _videoControllers[assetId];
     if (c == null || !c.value.isInitialized) {
-      // lazily init on play tap
+      // one tap both initialises and starts playback
       final review = ref.read(reviewProvider);
       final match = review.assets.where((e) => e.id == assetId).toList();
-      if (match.isNotEmpty) _ensureVideo(match.first);
+      if (match.isNotEmpty) await _ensureVideo(match.first, autoPlay: true);
       return;
     }
     if (c.value.isPlaying) {
       c.pause();
     } else {
-      c.play();
+      await c.play();
     }
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   void _showExif(ImmichAsset a) {
@@ -563,6 +584,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                                 asset: a,
                                 imageBytes: _thumbCache[a.id],
                                 videoController: _videoControllers[a.id],
+                                videoLoading: _pendingVideo.contains(a.id),
                                 onFavoriteToggle: () => ref.read(reviewProvider.notifier).toggleFavorite(a.id),
                                 onInfo: () => _showExif(a),
                               ),
