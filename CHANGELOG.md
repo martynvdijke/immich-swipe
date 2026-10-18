@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/martynvdijke/immich-swipe/compare/v1.13.2...v1.14.0) (2026-10-18)
+
+
+### Features
+
+* **mobile:** in-app SSO sign-in and readable video duration ([8afd083](https://github.com/martynvdijke/immich-swipe/commit/8afd08371293cd1e35072c51c71d73a5349deb87))
+
 ## [1.13.2](https://github.com/martynvdijke/immich-swipe/compare/v1.13.1...v1.13.2) (2026-10-17)
 
 
