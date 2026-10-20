@@ -345,6 +345,35 @@ func (s *SessionStore) Get(token string) (*Session, bool) {
 	return session, true
 }
 
+// Find returns the most recent live session for a server/user pair. It is
+// used by the multi-person switcher, which never sees raw session tokens.
+func (s *SessionStore) Find(serverURL, userName string) (string, *Session, bool) {
+	now := time.Now()
+	s.mu.RLock()
+	var bestToken string
+	var bestExpiry time.Time
+	for token, session := range s.sessions {
+		if session.ServerURL != serverURL || session.UserName != userName {
+			continue
+		}
+		if now.After(session.ExpiresAt) {
+			continue
+		}
+		if session.ExpiresAt.After(bestExpiry) {
+			bestToken, bestExpiry = token, session.ExpiresAt
+		}
+	}
+	s.mu.RUnlock()
+	if bestToken == "" {
+		return "", nil, false
+	}
+	session, ok := s.Get(bestToken)
+	if !ok {
+		return "", nil, false
+	}
+	return bestToken, session, true
+}
+
 func (s *SessionStore) Delete(token string) {
 	s.mu.Lock()
 	delete(s.sessions, token)
@@ -426,6 +455,17 @@ func NewServer(cfg Config) *Server {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
+	s.setSecurityHeaders(w)
+
+	// CSRF protection for cookie-authenticated mutations. Safe methods are
+	// untouched; legacy Bearer-only clients (no cookies) keep working.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		if !s.allowUnsafeRequest(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing CSRF token", "code": "csrf_failed"})
+			return
+		}
+	}
+
 	switch {
 	case path == "/api/health":
 		s.healthHandler(w, r)
@@ -462,6 +502,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case path == "/api/auth/account/email":
 		s.authMiddleware(http.HandlerFunc(s.accountEmailHandler)).ServeHTTP(w, r)
+
+	case path == "/api/auth/session":
+		s.authMiddleware(http.HandlerFunc(s.sessionInfoHandler)).ServeHTTP(w, r)
+
+	case path == "/api/auth/session/activate":
+		s.sessionActivateHandler(w, r)
+
+	case path == "/api/auth/session/adopt":
+		s.sessionAdoptHandler(w, r)
 
 	case path == "/api/admin/email/test":
 		s.authMiddleware(http.HandlerFunc(s.emailTestHandler)).ServeHTTP(w, r)
@@ -506,12 +555,95 @@ func (s *Server) configHandler(w http.ResponseWriter, r *http.Request) {
 
 	oauthEnabled, oauthButtonText := s.immichOAuthConfig(s.config.ServerURL)
 
+	csrfToken := s.ensureCSRFCookie(w, r)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"defaultServerUrl": s.config.ServerURL,
 		"version":          Version,
 		"oauthEnabled":     oauthEnabled,
 		"oauthButtonText":  oauthButtonText,
+		"csrfToken":        csrfToken,
 	})
+}
+
+// ─── Session helpers ───────────────────────────────────────────────────────
+
+// sessionPayload is the non-secret identity returned to the SPA. Session
+// tokens live only in the HttpOnly cookie.
+func sessionPayload(session *Session) map[string]interface{} {
+	return map[string]interface{}{
+		"userName":  session.UserName,
+		"serverUrl": session.ServerURL,
+		"mode":      string(session.Mode),
+	}
+}
+
+// sessionInfoHandler reports the identity behind the current cookie/Bearer
+// session so the SPA can drop stale local metadata after a restart or expiry.
+func (s *Server) sessionInfoHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	session := sessionFromContext(r.Context())
+	if session == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no session"})
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionPayload(session))
+}
+
+// sessionActivateHandler switches the browser's active session cookie to a
+// locally remembered identity (the multi-person session UX). No token is
+// returned; the server finds the stored session for that identity.
+func (s *Server) sessionActivateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		UserName  string `json:"userName"`
+		ServerURL string `json:"serverUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if req.UserName == "" || req.ServerURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "userName and serverUrl are required"})
+		return
+	}
+	token, session, ok := s.session.Find(req.ServerURL, req.UserName)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "session expired", "code": "session_expired"})
+		return
+	}
+	s.setSessionCookie(w, r, token)
+	writeJSON(w, http.StatusOK, sessionPayload(session))
+}
+
+// sessionAdoptHandler migrates a pre-cookie (localStorage) session token into
+// the HttpOnly cookie. The token itself is the credential; the CSRF check
+// applied by ServeHTTP prevents a cross-site page from planting a session.
+func (s *Server) sessionAdoptHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token is required"})
+		return
+	}
+	session, ok := s.session.Get(req.Token)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired session"})
+		return
+	}
+	s.setSessionCookie(w, r, req.Token)
+	writeJSON(w, http.StatusOK, sessionPayload(session))
 }
 
 // ─── Trmnl Stats ───────────────────────────────────────────────────────────
@@ -573,12 +705,12 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "userName and password are required to create an account"})
 			return
 		}
-		s.loginWithAccountCreate(w, req.UserName, req.Password, req.APIKey, req.ServerURL)
+		s.loginWithAccountCreate(w, r, req.UserName, req.Password, req.APIKey, req.ServerURL)
 		return
 	}
 
 	if hasUserName && hasPassword {
-		s.loginWithAccount(w, req.UserName, req.Password, req.ServerURL)
+		s.loginWithAccount(w, r, req.UserName, req.Password, req.ServerURL)
 		return
 	}
 
@@ -589,7 +721,7 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 // userName/password pair must match an existing account. The account's Immich
 // API key is NOT validated here — it may legitimately be empty until the
 // person sets it in Settings. Never logs the password.
-func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, serverURL string) {
+func (s *Server) loginWithAccount(w http.ResponseWriter, r *http.Request, userName, password, serverURL string) {
 	if serverURL == "" {
 		serverURL = s.config.ServerURL
 	}
@@ -613,6 +745,8 @@ func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, ser
 	}
 
 	token := s.session.CreateAPIKey(account.UserName, account.APIKey, serverURL)
+	s.setSessionCookie(w, r, token)
+	s.ensureCSRFCookie(w, r)
 	log.Printf("Login: mode=apiKey user=%q session=%s…", account.UserName, token[:12])
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"token":     token,
@@ -633,7 +767,7 @@ func (s *Server) loginWithAccount(w http.ResponseWriter, userName, password, ser
 //   - the name is new                    → a provided API key is validated against Immich
 //
 // Never logs the password or the API key.
-func (s *Server) loginWithAccountCreate(w http.ResponseWriter, userName, password, apiKey, serverURL string) {
+func (s *Server) loginWithAccountCreate(w http.ResponseWriter, r *http.Request, userName, password, apiKey, serverURL string) {
 	if len(password) < 8 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password must be at least 8 characters", "code": "weak_password"})
 		return
@@ -676,6 +810,8 @@ func (s *Server) loginWithAccountCreate(w http.ResponseWriter, userName, passwor
 
 	s.accounts.SetPassword(serverURL, userName, apiKey, password)
 	token := s.session.CreateAPIKey(userName, apiKey, serverURL)
+	s.setSessionCookie(w, r, token)
+	s.ensureCSRFCookie(w, r)
 	log.Printf("Login: mode=apiKey (account created/claimed) user=%q session=%s…", userName, token[:12])
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"token":     token,
@@ -731,7 +867,7 @@ func (s *Server) immichOAuthConfig(serverURL string) (enabled bool, buttonText s
 		return false, ""
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := immichHTTPClient.Do(req)
+	resp, err := s.httpClient().Do(req)
 	if err != nil {
 		return false, ""
 	}
@@ -778,7 +914,7 @@ func (s *Server) oauthPublicBase(r *http.Request) string {
 
 // oauthPostJSON posts a JSON body to Immich, replaying cookies. It returns the
 // response body on 200/201, the raw status otherwise. Never logs bodies.
-func oauthPostJSON(targetURL string, payload interface{}, cookies []*http.Cookie) (body []byte, status int) {
+func (s *Server) oauthPostJSON(targetURL string, payload interface{}, cookies []*http.Cookie) (body []byte, status int) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return nil, http.StatusInternalServerError
@@ -792,7 +928,7 @@ func oauthPostJSON(targetURL string, payload interface{}, cookies []*http.Cookie
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}
-	resp, err := immichHTTPClient.Do(req)
+	resp, err := s.httpClient().Do(req)
 	if err != nil {
 		return nil, 0
 	}
@@ -866,7 +1002,7 @@ func (s *Server) oauthStartHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	authReq.Header.Set("Content-Type", "application/json")
 	authReq.Header.Set("Accept", "application/json")
-	authResp, err := immichHTTPClient.Do(authReq)
+	authResp, err := s.httpClient().Do(authReq)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot reach Immich server"})
 		return
@@ -945,7 +1081,7 @@ func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	// OAUTH_INVALID_RESPONSE; re-deriving the base from this request's headers
 	// can differ behind a proxy (scheme/host) and break the token exchange.
 	callbackURL := pending.RedirectURI + "?" + r.URL.RawQuery
-	respBody, status := oauthPostJSON(
+	respBody, status := s.oauthPostJSON(
 		strings.TrimRight(pending.ServerURL, "/")+"/api/oauth/callback",
 		map[string]string{"url": callbackURL, "state": state, "codeVerifier": pending.CodeVerifier},
 		pending.Cookies,
@@ -1038,6 +1174,8 @@ func (s *Server) oauthFinishHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.setSessionCookie(w, r, entry.Token)
+	s.ensureCSRFCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"token":     entry.Token,
 		"userName":  entry.UserName,
@@ -1191,7 +1329,7 @@ func (s *Server) validateUserMe(serverURL string, setAuth func(*http.Request)) (
 	setAuth(req)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := immichHTTPClient.Do(req)
+	resp, err := s.httpClient().Do(req)
 	if err != nil {
 		return false, "", err
 	}
@@ -1222,21 +1360,18 @@ func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		token := strings.TrimPrefix(auth, "Bearer ")
+	token := sessionTokenFromRequest(r)
+	if token != "" {
 		if session, ok := s.session.Get(token); ok {
 			// Best-effort Immich logout for access-token sessions
 			if session.Mode == AuthModeAccessToken && session.AccessToken != "" {
 				s.immichLogout(session.ServerURL, session.AccessToken)
 			}
-			s.session.Delete(token)
-		} else {
-			// Session already gone — still succeed locally
-			s.session.Delete(token)
 		}
+		s.session.Delete(token)
 	}
 
+	s.clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -1250,7 +1385,7 @@ func (s *Server) immichLogout(serverURL, accessToken string) {
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
-	resp, err := immichHTTPClient.Do(req)
+	resp, err := s.httpClient().Do(req)
 	if err != nil {
 		return
 	}
@@ -1260,12 +1395,11 @@ func (s *Server) immichLogout(serverURL, accessToken string) {
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") {
+		token := sessionTokenFromRequest(r)
+		if token == "" {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or invalid authorization header"})
 			return
 		}
-		token := strings.TrimPrefix(auth, "Bearer ")
 		session, ok := s.session.Get(token)
 		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired session"})

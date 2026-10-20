@@ -52,7 +52,7 @@ describe('auth store loginWithAccount', () => {
     )
 
     expect(result).toEqual({ ok: true, needsApiKey: false })
-    expect(auth.sessionToken).toBe('swipe-session')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.currentUserName).toBe('Display Name')
     expect(auth.immichServerUrl).toBe('https://immich.example')
     expect(auth.autoLoginBlocked).toBe(false)
@@ -62,7 +62,7 @@ describe('auth store loginWithAccount', () => {
 
     const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
     expect(stored).toHaveLength(1)
-    expect(stored[0].token).toBe('swipe-session')
+    expect(stored[0].token).toBeUndefined()
     expect(stored[0].userName).toBe('Display Name')
     expect(stored[0].serverUrl).toBe('https://immich.example')
     expect(stored[0].password).toBeUndefined()
@@ -127,7 +127,7 @@ describe('auth store loginWithAccount', () => {
       expect(result.error).toBe('invalid password')
       expect(result.code).toBe('invalid_password')
     }
-    expect(auth.sessionToken).toBeNull()
+    expect(auth.isLoggedIn).toBe(false)
     expect(auth.isLoggedIn).toBe(false)
     expect(auth.sessionCount).toBe(0)
     expect(localStorage.getItem(SESSIONS_KEY)).toBeNull()
@@ -211,6 +211,12 @@ describe('auth store multi-session registry', () => {
           headers: { 'Content-Type': 'application/json' },
         })
       }
+      if (url.includes('/api/auth/session/activate')) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
       if (url.includes('/api/auth/login')) {
         const body = JSON.parse(String(init?.body || '{}'))
         const name = body.userName
@@ -272,10 +278,10 @@ describe('auth store multi-session registry', () => {
     await auth.loginWithAccount('bob', 'pw123456', 'https://immich.example')
     const aliceKey = auth.sessions.find((s) => s.userName === 'alice')!.key
 
-    auth.switchTo(aliceKey)
+    await auth.switchTo(aliceKey)
 
     expect(auth.currentUserName).toBe('alice')
-    expect(auth.sessionToken).toBe('token-alice')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.activeSessionKey).toBe(aliceKey)
     expect(localStorage.getItem(ACTIVE_KEY)).toBe(aliceKey)
     expect(auth.sessionCount).toBe(2)
@@ -287,7 +293,7 @@ describe('auth store multi-session registry', () => {
     const auth = useAuthStore()
     await auth.loginWithAccount('alice', 'pw123456', 'https://immich.example')
 
-    auth.switchTo('https://other|nobody')
+    await auth.switchTo('https://other|nobody')
 
     expect(auth.currentUserName).toBe('alice')
   })
@@ -327,14 +333,14 @@ describe('auth store init', () => {
     localStorage.setItem(
       SESSIONS_KEY,
       JSON.stringify([
-        { token: 'stored-token', userName: 'Stored User', serverUrl: 'https://immich.example' },
+        { userName: 'Stored User', serverUrl: 'https://immich.example' },
       ]),
     )
     localStorage.setItem(ACTIVE_KEY, 'https://immich.example|Stored User')
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
 
     const auth = useAuthStore()
-    expect(auth.sessionToken).toBe('stored-token')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.currentUserName).toBe('Stored User')
     expect(auth.immichServerUrl).toBe('https://immich.example')
     expect(auth.isLoggedIn).toBe(true)
@@ -354,12 +360,12 @@ describe('auth store init', () => {
 
     const auth = useAuthStore()
 
-    expect(auth.sessionToken).toBe('legacy-token')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.currentUserName).toBe('Legacy User')
     expect(auth.isLoggedIn).toBe(true)
     const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
     expect(stored).toHaveLength(1)
-    expect(stored[0].token).toBe('legacy-token')
+    expect(stored[0].token).toBeUndefined()
     expect(sessionStorage.getItem(LEGACY_KEY)).toBeNull()
   })
 
@@ -368,7 +374,7 @@ describe('auth store init', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
 
     const auth = useAuthStore()
-    expect(auth.sessionToken).toBeNull()
+    expect(auth.isLoggedIn).toBe(false)
     expect(auth.isLoggedIn).toBe(false)
     expect(localStorage.getItem(SESSIONS_KEY)).toBeNull()
   })
@@ -378,7 +384,7 @@ describe('auth store init', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
 
     const auth = useAuthStore()
-    expect(auth.sessionToken).toBeNull()
+    expect(auth.isLoggedIn).toBe(false)
     expect(auth.isLoggedIn).toBe(false)
     expect(sessionStorage.getItem(LEGACY_KEY)).toBeNull()
   })
@@ -386,7 +392,7 @@ describe('auth store init', () => {
   it('handles missing registry entry', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('no network')))
     const auth = useAuthStore()
-    expect(auth.sessionToken).toBeNull()
+    expect(auth.isLoggedIn).toBe(false)
     expect(auth.currentUserName).toBe('')
     expect(auth.immichServerUrl).toBe('')
     expect(auth.sessionCount).toBe(0)
@@ -453,14 +459,17 @@ describe('auth store computed properties', () => {
     sessionStorage.clear()
   })
 
-  it('authHeader returns Authorization header when logged in', () => {
+  it('authHeader carries the CSRF token instead of a bearer token', () => {
+    document.cookie = 'swipe_csrf=csrf-value'
     localStorage.setItem(
       SESSIONS_KEY,
-      JSON.stringify([{ token: 'my-token', userName: 'u', serverUrl: 'https://s' }]),
+      JSON.stringify([{ userName: 'u', serverUrl: 'https://s' }]),
     )
     localStorage.setItem(ACTIVE_KEY, 'https://s|u')
     const auth = useAuthStore()
-    expect(auth.authHeader).toEqual({ Authorization: 'Bearer my-token' })
+    expect(auth.authHeader).toEqual({ 'X-CSRF-Token': 'csrf-value' })
+    expect((auth.authHeader as Record<string, string>).Authorization).toBeUndefined()
+    document.cookie = 'swipe_csrf=; Max-Age=0'
   })
 
   it('authHeader returns empty object when not logged in', () => {
@@ -480,7 +489,7 @@ describe('auth store computed properties', () => {
     localStorage.setItem(ACTIVE_KEY, 'https://s|u')
     const auth2 = useAuthStore()
     expect(auth2.isLoggedIn).toBe(true)
-    expect(auth2.sessionToken).toBe('t')
+    expect(auth2.isLoggedIn).toBe(true)
   })
 })
 
@@ -521,7 +530,7 @@ describe('auth store logout', () => {
     expect(remaining).toBe(true)
     expect(auth.sessionCount).toBe(1)
     expect(auth.currentUserName).toBe('Bob')
-    expect(auth.sessionToken).toBe('t-bob')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.isLoggedIn).toBe(true)
     const stored = JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]')
     expect(stored).toHaveLength(1)
@@ -536,7 +545,7 @@ describe('auth store logout', () => {
     auth.logout()
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/logout', {
       method: 'POST',
-      headers: { Authorization: 'Bearer t-alice' },
+      headers: {},
     })
   })
 
@@ -551,7 +560,7 @@ describe('auth store logout', () => {
     const auth = useAuthStore()
     const remaining = auth.logout()
     expect(remaining).toBe(false)
-    expect(auth.sessionToken).toBeNull()
+    expect(auth.isLoggedIn).toBe(false)
     expect(auth.currentUserName).toBe('')
     expect(auth.immichServerUrl).toBe('')
     expect(auth.autoLoginBlocked).toBe(false)
@@ -571,11 +580,10 @@ describe('auth store logout', () => {
     expect(remaining).toBe(true)
     expect(auth.sessionCount).toBe(1)
     expect(auth.currentUserName).toBe('Alice')
-    expect(auth.sessionToken).toBe('t-alice')
-    expect(fetchMock).toHaveBeenCalledWith('/api/auth/logout', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer t-bob' },
-    })
+    expect(auth.isLoggedIn).toBe(true)
+    // Logging out another person only drops the local record; the active
+    // HttpOnly cookie cannot be swapped from JavaScript.
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/auth/logout', expect.anything())
   })
 
   it('succeeds when not logged in (no fetch call)', () => {
@@ -617,7 +625,7 @@ describe('auth store removeActiveSession (401 path)', () => {
     const remaining = auth.removeActiveSession()
     expect(remaining).toBe(true)
     expect(auth.currentUserName).toBe('Bob')
-    expect(auth.sessionToken).toBe('t-bob')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.sessionCount).toBe(1)
     expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
       expect.stringContaining('/api/auth/logout'),
@@ -666,7 +674,7 @@ describe('auth store restoreLastActive', () => {
     auth.restoreLastActive()
     expect(auth.isLoggedIn).toBe(true)
     expect(auth.currentUserName).toBe('Alice')
-    expect(auth.sessionToken).toBe('t-alice')
+    expect(auth.isLoggedIn).toBe(true)
   })
 
   it('does nothing when no sessions are stored', () => {
@@ -709,7 +717,7 @@ describe('auth store setApiKey', () => {
     expect(call).toBeTruthy()
     const init = call?.[1] as RequestInit
     expect(JSON.parse(String(init.body))).toEqual({ apiKey: 'my-key' })
-    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer t-alice')
+    expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined()
   })
 
   it('returns Invalid API key fallback on 401 with empty body', async () => {
@@ -794,7 +802,7 @@ describe('auth store local accounts', () => {
     const result = await auth.loginWithAccount('Alice', 'secret123', 'https://immich.example')
 
     expect(result).toEqual({ ok: true, needsApiKey: false })
-    expect(auth.sessionToken).toBe('account-session')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.currentUserName).toBe('Alice')
     expect(auth.activeSessionMode).toBe('apiKey')
     expect(auth.isLoggedIn).toBe(true)
@@ -873,7 +881,7 @@ describe('auth store local accounts', () => {
     expect(accountCall).toBeTruthy()
     const init = accountCall?.[1] as unknown as RequestInit
     expect(JSON.parse(String(init.body))).toEqual({ currentPassword: 'oldpass', password: 'newpass123' })
-    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer t-alice')
+    expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined()
   })
 
   it('setAccountPassword omits currentPassword when empty and reports errors', async () => {
@@ -997,7 +1005,7 @@ describe('auth store loginWithAccountCreate', () => {
     const result = await auth.loginWithAccountCreate('Bob', 'secret123', 'key-bob', 'https://immich.example')
 
     expect(result).toEqual({ ok: true, needsApiKey: false })
-    expect(auth.sessionToken).toBe('created-session')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.currentUserName).toBe('Bob')
     expect(auth.activeSessionMode).toBe('apiKey')
     expect(auth.isLoggedIn).toBe(true)
@@ -1189,7 +1197,7 @@ describe('auth store OAuth login', () => {
     const result = await auth.loginWithOAuthCode('handoff-123')
 
     expect(result).toEqual({ ok: true })
-    expect(auth.sessionToken).toBe('oauth-session')
+    expect(auth.isLoggedIn).toBe(true)
     expect(auth.currentUserName).toBe('SSO User')
     expect(auth.activeSessionMode).toBe('accessToken')
     expect(auth.isLoggedIn).toBe(true)

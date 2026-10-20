@@ -1,12 +1,18 @@
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, vi } from 'vitest'
 import { useAuthStore } from '@/stores/auth'
 import { useReviewedStore } from '@/stores/reviewed'
 import { seedAuthSession, seedAuthSessions } from './helpers/seedAuth'
 
 describe('reviewed store', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   beforeEach(() => {
     localStorage.clear()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })))
     setActivePinia(createPinia())
   })
 
@@ -47,7 +53,7 @@ describe('reviewed store', () => {
     reviewed.markReviewed('asset-1', 'keep')
     await nextTick()
 
-    auth.switchTo('http://server-b|Bob')
+    await auth.switchTo('http://server-b|Bob')
     await nextTick()
 
     expect(reviewed.isReviewed('asset-1')).toBe(false)

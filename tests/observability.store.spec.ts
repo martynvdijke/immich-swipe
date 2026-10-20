@@ -1,5 +1,6 @@
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, vi } from 'vitest'
 import { useObservabilityStore } from '@/stores/observability'
 import { useAuthStore } from '@/stores/auth'
 import { seedAuthSession, seedAuthSessions } from './helpers/seedAuth'
@@ -9,8 +10,13 @@ function observabilityKeys(): string[] {
 }
 
 describe('observability store', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   beforeEach(() => {
     localStorage.clear()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })))
     setActivePinia(createPinia())
   })
 
@@ -72,7 +78,7 @@ describe('observability store', () => {
     store.setUmami({ enabled: true, serverUrl: 'https://umami-a.example.com', websiteId: 'web-a' })
     await nextTick()
 
-    auth.switchTo('http://server-b|Bob')
+    await auth.switchTo('http://server-b|Bob')
     await nextTick()
 
     // New namespace resets to defaults.

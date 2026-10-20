@@ -47,3 +47,6 @@ jobs:
 
       - name: Verify Go build
         run: cd server && go build -o /dev/null .
+
+      - name: Run Go tests
+        run: cd server && go test -count=1 ./...

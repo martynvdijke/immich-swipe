@@ -191,7 +191,7 @@ describe('SettingsView', () => {
       expect(accountCall).toBeTruthy()
       const init = accountCall?.[1] as unknown as RequestInit
       expect(JSON.parse(String(init.body))).toEqual({ password: 'newpass123' })
-      expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer test-token')
+      expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined()
       expect(wrapper.find('[data-testid="account-error"]').exists()).toBe(false)
     })
 

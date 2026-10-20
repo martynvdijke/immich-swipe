@@ -1,12 +1,18 @@
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
+import { afterEach, vi } from 'vitest'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useAuthStore } from '@/stores/auth'
 import { seedAuthSession, seedAuthSessions } from './helpers/seedAuth'
 
 describe('preferences store', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   beforeEach(() => {
     localStorage.clear()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } })))
     setActivePinia(createPinia())
   })
 
@@ -49,7 +55,7 @@ describe('preferences store', () => {
     // Wait for persist after hotkey set
     await nextTick()
 
-    auth.switchTo('http://server-b|Bob')
+    await auth.switchTo('http://server-b|Bob')
     // Immediate loadFromStorage fires via watch immediate + storageKey change
     await nextTick()
 

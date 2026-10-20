@@ -1,10 +1,9 @@
 /**
  * Test helpers for seeding a logged-in auth state.
  *
- * The auth store's sessionToken/currentUserName/immichServerUrl are computed
- * from the ACTIVE session in the multi-session registry, so tests must seed
- * localStorage BEFORE the first useAuthStore() call (init() reads the
- * registry at store creation).
+ * The session itself lives in an HttpOnly cookie, so tests only seed the
+ * non-secret identity registry. Tokens are accepted for call-site
+ * compatibility and deliberately not persisted.
  */
 
 export interface SeedSession {
@@ -23,16 +22,19 @@ export function sessionKey(serverUrl: string, userName: string): string {
 }
 
 /** Seed a single logged-in session and make it active. */
-export function seedAuthSession(token: string, userName: string, serverUrl: string, mode?: string) {
+export function seedAuthSession(_token: string, userName: string, serverUrl: string, mode?: string) {
   localStorage.setItem(
     SESSIONS_KEY,
-    JSON.stringify(mode ? [{ token, userName, serverUrl, mode }] : [{ token, userName, serverUrl }]),
+    JSON.stringify(mode ? [{ userName, serverUrl, mode }] : [{ userName, serverUrl }]),
   )
   localStorage.setItem(ACTIVE_KEY, sessionKey(serverUrl, userName))
 }
 
 /** Seed multiple sessions; `activeKey` selects the active one. */
 export function seedAuthSessions(sessions: SeedSession[], activeKey: string) {
-  localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions))
+  localStorage.setItem(
+    SESSIONS_KEY,
+    JSON.stringify(sessions.map(({ userName, serverUrl, mode }) => ({ userName, serverUrl, mode }))),
+  )
   localStorage.setItem(ACTIVE_KEY, activeKey)
 }

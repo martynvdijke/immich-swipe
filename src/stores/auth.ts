@@ -12,7 +12,6 @@ export type LoginResult =
   | { ok: false; error: string; code?: string }
 
 interface SessionRecord {
-  token: string
   userName: string
   serverUrl: string
   /** Session mode as reported by the backend: 'apiKey' | 'accessToken'. */
@@ -44,6 +43,8 @@ export const useAuthStore = defineStore('auth', () => {
   /** Immich-native OAuth/SSO availability (from GET /api/auth/config). */
   const oauthEnabled = ref(false)
   const oauthButtonText = ref('')
+  /** Double-submit CSRF token mirrored from GET /api/auth/config. */
+  const csrfToken = ref('')
   // Set by the 401 handler / failed auto-login to prevent the router guard
   // from re-attempting auto-login into an infinite loop.
   const autoLoginBlocked = ref(false)
@@ -60,7 +61,6 @@ export const useAuthStore = defineStore('auth', () => {
   // Public surface stays stable: these reflect the ACTIVE session, so all
   // existing consumers (apiRequest, per-user stores, header, views) keep
   // working and re-react on identity change.
-  const sessionToken = computed(() => activeSession.value?.token ?? null)
   const currentUserName = computed(() => activeSession.value?.userName ?? '')
   const immichServerUrl = computed(() => activeSession.value?.serverUrl ?? '')
   /** 'apiKey' | 'accessToken' | '' (unknown/legacy sessions without mode). */
@@ -79,10 +79,19 @@ export const useAuthStore = defineStore('auth', () => {
     }))
   )
 
-  const authHeader = computed(() => {
-    if (!sessionToken.value) return {} as Record<string, string>
-    return { 'Authorization': `Bearer ${sessionToken.value}` }
-  })
+  /** CSRF token from the double-submit cookie (set by GET /api/auth/config). */
+  function csrfHeaders(): Record<string, string> {
+    let token = csrfToken.value
+    if (!token && typeof document !== 'undefined') {
+      const match = document.cookie.match(/(?:^|; )swipe_csrf=([^;]*)/)
+      if (match) token = decodeURIComponent(match[1])
+    }
+    return token ? { 'X-CSRF-Token': token } : {}
+  }
+
+  // The session itself lives in an HttpOnly cookie; only the CSRF token is
+  // attached here. Keeping the name stable avoids touching every caller.
+  const authHeader = computed<Record<string, string>>(() => csrfHeaders())
 
   function persistSessions() {
     if (sessionRecords.value.length === 0) {
@@ -113,6 +122,15 @@ export const useAuthStore = defineStore('auth', () => {
     persistSessions()
   }
 
+  /** One-time migration: exchange a localStorage token for an HttpOnly cookie. */
+  function adoptLegacyToken(token: string): void {
+    fetch('/api/auth/session/adopt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+      body: JSON.stringify({ token }),
+    }).catch(() => {})
+  }
+
   function init() {
     // 1) Load the multi-session registry from localStorage.
     try {
@@ -120,13 +138,24 @@ export const useAuthStore = defineStore('auth', () => {
       if (stored) {
         const parsed = JSON.parse(stored)
         if (Array.isArray(parsed)) {
-          sessionRecords.value = parsed.filter(
-            (item): item is SessionRecord =>
-              item &&
-              typeof item.token === 'string' &&
-              typeof item.userName === 'string' &&
-              typeof item.serverUrl === 'string'
-          )
+          const legacyTokens: string[] = []
+          sessionRecords.value = parsed
+            .filter(
+              (item): item is SessionRecord =>
+                item &&
+                typeof item.userName === 'string' &&
+                typeof item.serverUrl === 'string'
+            )
+            .map((item) => {
+              const legacy = item as SessionRecord & { token?: string }
+              if (typeof legacy.token === 'string' && legacy.token) {
+                legacyTokens.push(legacy.token)
+              }
+              return { userName: item.userName, serverUrl: item.serverUrl, mode: item.mode }
+            })
+          // Adopt tokens saved by older builds into HttpOnly cookies, then
+          // drop them from the registry entirely.
+          for (const token of legacyTokens) adoptLegacyToken(token)
         }
       }
     } catch {
@@ -143,11 +172,11 @@ export const useAuthStore = defineStore('auth', () => {
           if (data?.token) {
             sessionRecords.value = [
               {
-                token: data.token,
                 userName: data.userName ?? '',
                 serverUrl: data.serverUrl ?? '',
               },
             ]
+            adoptLegacyToken(data.token)
             activeSessionKey.value = sessionKey(data.serverUrl ?? '', data.userName ?? '')
           }
           sessionStorage.removeItem(LEGACY_STORAGE_KEY)
@@ -192,6 +221,7 @@ export const useAuthStore = defineStore('auth', () => {
         serverVersion.value = data.version || ''
         oauthEnabled.value = data.oauthEnabled === true
         oauthButtonText.value = typeof data.oauthButtonText === 'string' ? data.oauthButtonText : ''
+        csrfToken.value = typeof data.csrfToken === 'string' ? data.csrfToken : ''
       }
     } catch {
       // Backend not available yet
@@ -199,20 +229,19 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function applyLoginSuccess(
-    data: { token?: string; userName?: string; serverUrl?: string; mode?: string },
+    data: { userName?: string; serverUrl?: string; mode?: string },
     fallbackUserName: string,
     fallbackServerUrl = ''
   ) {
-    const token = data.token ?? null
     const userName = data.userName || fallbackUserName
     const serverUrl = data.serverUrl || fallbackServerUrl
-    if (!token) return
+    if (!userName) return
 
     const key = sessionKey(serverUrl, userName)
     const existing = sessionRecords.value.findIndex(
       (record) => sessionKey(record.serverUrl, record.userName) === key
     )
-    const record: SessionRecord = { token, userName, serverUrl, mode: data.mode }
+    const record: SessionRecord = { userName, serverUrl, mode: data.mode }
     if (existing >= 0) {
       // Upsert: same person on same server -> replace record in place.
       sessionRecords.value[existing] = record
@@ -244,7 +273,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
         body: JSON.stringify({ userName, password, serverUrl }),
       })
       if (!res.ok) {
@@ -301,7 +330,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
         body: JSON.stringify({ userName, password, apiKey, serverUrl, create: true }),
       })
       if (!res.ok) {
@@ -348,7 +377,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const res = await fetch('/api/auth/oauth/start', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
         body: JSON.stringify({ serverUrl }),
       })
       if (!res.ok) {
@@ -371,7 +400,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const res = await fetch('/api/auth/oauth/finish', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
         body: JSON.stringify({ code }),
       })
       if (!res.ok) {
@@ -386,18 +415,29 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  /** Activate a stored session without any credential re-entry. */
-  function switchTo(key: string): void {
-    if (
-      !sessionRecords.value.some(
-        (record) => sessionKey(record.serverUrl, record.userName) === key
-      )
-    ) {
-      return
+  /** Activate a stored session without any credential re-entry. The backend
+   *  swaps the HttpOnly cookie; no token ever reaches JavaScript. */
+  async function switchTo(key: string): Promise<void> {
+    const record = sessionRecords.value.find(
+      (item) => sessionKey(item.serverUrl, item.userName) === key
+    )
+    if (!record) return
+    try {
+      const res = await fetch('/api/auth/session/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+        body: JSON.stringify({ userName: record.userName, serverUrl: record.serverUrl }),
+      })
+      if (!res.ok) {
+        removeRecord(key)
+        return
+      }
+      activeSessionKey.value = key
+      persistSessions()
+      autoLoginBlocked.value = false
+    } catch {
+      // Keep the record; the user can retry when the server is reachable.
     }
-    activeSessionKey.value = key
-    persistSessions()
-    autoLoginBlocked.value = false
   }
 
   /** Restore the last active (else first) stored session; used on reload. */
@@ -420,7 +460,7 @@ export const useAuthStore = defineStore('auth', () => {
     if (active) {
       fetch('/api/auth/logout', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${active.token}` },
+        headers: { ...csrfHeaders() },
       }).catch(() => {})
       removeRecord(activeSessionKey.value as string)
     }
@@ -435,10 +475,9 @@ export const useAuthStore = defineStore('auth', () => {
       (item) => sessionKey(item.serverUrl, item.userName) === key
     )
     if (record) {
-      fetch('/api/auth/logout', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${record.token}` },
-      }).catch(() => {})
+      if (key === activeSessionKey.value) {
+        fetch('/api/auth/logout', { method: 'POST', headers: { ...csrfHeaders() } }).catch(() => {})
+      }
       removeRecord(key)
     }
     return sessionRecords.value.length > 0
@@ -460,7 +499,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
         body: JSON.stringify({ serverUrl, userName }),
       })
       if (!res.ok) {
@@ -477,7 +516,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const res = await fetch('/api/auth/reset-password', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
         body: JSON.stringify({ token, newPassword }),
       })
       if (!res.ok) {
@@ -511,7 +550,6 @@ export const useAuthStore = defineStore('auth', () => {
   init()
 
   return {
-    sessionToken,
     currentUserName,
     immichServerUrl,
     activeSessionMode,
