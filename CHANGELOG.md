@@ -1,3 +1,10 @@
+## [1.14.5](https://github.com/martynvdijke/immich-swipe/compare/v1.14.4...v1.14.5) (2026-10-20)
+
+
+### Bug Fixes
+
+* **android:** add release signing and pin Flutter ([830c47a](https://github.com/martynvdijke/immich-swipe/commit/830c47ab03b2071931f91b1d98e536d5181e2b27))
+
 ## [1.14.4](https://github.com/martynvdijke/immich-swipe/compare/v1.14.3...v1.14.4) (2026-10-19)
 
 ## [1.14.3](https://github.com/martynvdijke/immich-swipe/compare/v1.14.2...v1.14.3) (2026-10-18)
