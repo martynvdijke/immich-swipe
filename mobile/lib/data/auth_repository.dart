@@ -18,13 +18,11 @@ class AuthRepository {
   Future<LoginResult> login({
     required String userName,
     required String password,
-    String? serverUrl,
   }) async {
     try {
       final r = await _dio.post('/auth/login', data: {
         'userName': userName,
         'password': password,
-        if (serverUrl != null && serverUrl.isNotEmpty) 'serverUrl': serverUrl,
       });
       return LoginResult.fromJson(r.data as Map<String, dynamic>);
     } on DioException catch (e) {
@@ -36,7 +34,6 @@ class AuthRepository {
     required String userName,
     required String password,
     String? apiKey,
-    String? serverUrl,
   }) async {
     try {
       final r = await _dio.post('/auth/login', data: {
@@ -44,7 +41,6 @@ class AuthRepository {
         'password': password,
         'create': true,
         if (apiKey != null && apiKey.isNotEmpty) 'apiKey': apiKey,
-        if (serverUrl != null && serverUrl.isNotEmpty) 'serverUrl': serverUrl,
       });
       return LoginResult.fromJson(r.data as Map<String, dynamic>);
     } on DioException catch (e) {
@@ -60,11 +56,9 @@ class AuthRepository {
     }
   }
 
-  Future<Map<String, dynamic>> oauthStart({String? serverUrl}) async {
+  Future<Map<String, dynamic>> oauthStart() async {
     try {
-      final r = await _dio.post('/auth/oauth/start', data: {
-        if (serverUrl != null && serverUrl.isNotEmpty) 'serverUrl': serverUrl,
-      });
+      final r = await _dio.post('/auth/oauth/start', data: <String, dynamic>{});
       return r.data as Map<String, dynamic>;
     } on DioException catch (e) {
       throw ApiClient.mapError(e);

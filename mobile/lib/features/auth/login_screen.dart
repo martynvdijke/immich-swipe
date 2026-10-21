@@ -1,4 +1,5 @@
 // ignore_for_file: deprecated_member_use, use_build_context_synchronously
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/providers.dart';
@@ -23,26 +24,50 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   bool _needsApiKey = false;
   bool _obscure = true;
   final _serverFocus = FocusNode();
+  Timer? _ssoDebounce;
+  bool _ssoChecked = false;
 
   @override
   void initState() {
     super.initState();
     // OAuth availability comes from GET /api/auth/config, which is otherwise only
     // fetched after a session exists — so a fresh install would never surface the
-    // SSO button. Check the typed server as soon as the user leaves the field.
+    // SSO button. Probe the typed server after a short debounce while typing, and
+    // immediately when the field loses focus.
+    _serverCtrl.addListener(_onServerChanged);
     _serverFocus.addListener(() {
-      if (!_serverFocus.hasFocus) _checkOauthConfig();
+      if (!_serverFocus.hasFocus) {
+        _ssoDebounce?.cancel();
+        _checkOauthConfig();
+      }
     });
   }
 
-  void _checkOauthConfig() {
+  void _onServerChanged() {
+    _ssoDebounce?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _ssoChecked = false;
+      ref.read(sessionProvider.notifier).clearOauthConfig();
+    });
     final url = _serverCtrl.text.trim();
     if (url.isEmpty) return;
-    ref.read(sessionProvider.notifier).fetchConfigFor(url);
+    _ssoDebounce = Timer(const Duration(milliseconds: 400), _checkOauthConfig);
+  }
+
+  Future<void> _checkOauthConfig() async {
+    final url = _serverCtrl.text.trim();
+    if (url.isEmpty) return;
+    final ok = await ref.read(sessionProvider.notifier).fetchConfigFor(url);
+    if (!mounted) return;
+    // Ignore a stale result if the field changed while the request was in flight.
+    if (_serverCtrl.text.trim() != url) return;
+    setState(() => _ssoChecked = ok);
   }
 
   @override
   void dispose() {
+    _ssoDebounce?.cancel();
     _serverFocus.dispose();
     _serverCtrl.dispose();
     _userCtrl.dispose();
@@ -171,7 +196,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final oauthEnabled = ref.watch(sessionProvider).oauthConfig?.oauthEnabled ?? false;
+    final oauthEnabled = _ssoChecked && (ref.watch(sessionProvider).oauthConfig?.oauthEnabled ?? false);
     final oauthText = ref.watch(sessionProvider).oauthConfig?.oauthButtonText ?? 'SSO';
     final scheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -238,11 +263,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   width: 44,
                   height: 44,
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)]),
                     borderRadius: BorderRadius.circular(12),
                     boxShadow: [BoxShadow(color: scheme.primary.withOpacity(0.3), blurRadius: 12, offset: const Offset(0, 6))],
                   ),
-                  child: const Icon(Icons.style_rounded, color: Colors.white, size: 22),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.asset(
+                      'assets/branding/app_icon.png',
+                      width: 44,
+                      height: 44,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -355,10 +387,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     'Opens the provider sign-in page in the app and finishes the handoff automatically. '
                     'If your provider blocks the in-app browser, copy the SSO URL from there and paste the code above.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 11)),
-              ] else
+              ] else if (_ssoChecked)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
                   child: Text('SSO disabled on this server (GET /api/auth/config oauthEnabled=false).',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 12)),
+                )
+              else if (_serverCtrl.text.trim().isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text('Checking SSO availability…',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 12)),
                 ),
             ]),

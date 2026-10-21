@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Monochrome (Android 13+ themed icon) variant: single-colour silhouette,
+     the launcher tints it. Same safe-zone placement as the colour foreground. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- photo card outline -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4.23"
+        android:strokeLineJoin="round"
+        android:pathData="M34.42,31.06 H73.58 A1.8,1.8 0 0 1 75.39,32.87 V64.2 A1.8,1.8 0 0 1 73.58,66 H34.42 A1.8,1.8 0 0 1 32.62,64.2 V32.87 A1.8,1.8 0 0 1 34.42,31.06 Z" />
+
+    <!-- ridge growing out of the card's bottom edge -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34.26 65.99 L43.66 53.39 L52.12 59.03 L62.46 45.87 L73.74 65.99 Z" />
+
+    <!-- sun -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M63.16,38.82 a4.93,4.93 0 1,0 9.87,0 a4.93,4.93 0 1,0 -9.87,0 Z" />
+
+    <!-- swipe arrow -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="3.52"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M46.01 77.83 L61.52 77.83 M52.59 72.19 L61.52 77.83 L52.59 83.47" />
+</vector>

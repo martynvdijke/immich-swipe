@@ -14,6 +14,12 @@ import '../models/session.dart';
 // ------------------------------------------------------------------
 final secureStoreProvider = Provider<SecureStore>((ref) => SecureStore());
 
+/// Builds the Dio client for a given swipe-backend URL. Overridable in tests so
+/// auth flows can be exercised without real sockets.
+typedef AuthDioFactory = Dio Function(String serverUrl, String? token);
+final authDioFactoryProvider = Provider<AuthDioFactory>(
+    (ref) => (serverUrl, token) => ApiClient(serverUrl: serverUrl, token: token).dio);
+
 class SessionState {
   SessionState({this.session, this.oauthConfig, this.loading = false, this.error, this.needsApiKey = false});
   final SessionInfo? session;
@@ -34,7 +40,7 @@ class SessionNotifier extends StateNotifier<SessionState> {
   final Ref ref;
 
   Dio _dioFor(String serverUrl, String? token) =>
-      ApiClient(serverUrl: serverUrl, token: token).dio;
+      ref.read(authDioFactoryProvider)(serverUrl, token);
 
   Future<void> _restore() async {
     final s = await ref.read(secureStoreProvider).readSession();
@@ -47,23 +53,31 @@ class SessionNotifier extends StateNotifier<SessionState> {
           session: SessionInfo(serverUrl: url, token: token, userName: user, mode: mode ?? 'apiKey'),
           oauthConfig: state.oauthConfig);
       await fetchConfig();
-    } else {
-      await fetchConfigFor(null);
     }
+    // No restored session: leave oauthConfig null. Never probe a default/loopback
+    // address on a fresh install.
   }
 
   Future<void> fetchConfig() async {
     await fetchConfigFor(state.session?.serverUrl);
   }
 
-  Future<void> fetchConfigFor(String? serverUrl) async {
+  /// Fetches `GET /auth/config` for [serverUrl].
+  ///
+  /// Returns `false` without any network request when the URL is null/empty, and
+  /// `false` when the request fails. Never falls back to a default address.
+  Future<bool> fetchConfigFor(String? serverUrl) async {
+    final url = serverUrl?.trim() ?? '';
+    if (url.isEmpty) return false;
     try {
-      final dio = _dioFor(serverUrl ?? 'http://localhost:8080', state.session?.token);
+      final dio = _dioFor(url, state.session?.token);
       final repo = AuthRepository(dio);
       final cfg = await repo.getConfig();
       state = SessionState(session: state.session, oauthConfig: cfg, loading: false, needsApiKey: state.needsApiKey, error: state.error);
+      return true;
     } catch (_) {
       // ignore config errors
+      return false;
     }
   }
 
@@ -81,13 +95,20 @@ class SessionNotifier extends StateNotifier<SessionState> {
     state = SessionState(oauthConfig: state.oauthConfig);
   }
 
+  /// Drops the cached OAuth config (e.g. the user edited the server URL).
+  void clearOauthConfig() {
+    state = SessionState(session: state.session, needsApiKey: state.needsApiKey, error: state.error);
+  }
+
   Future<void> login({required String serverUrl, required String userName, required String password}) async {
     state = SessionState(session: state.session, oauthConfig: state.oauthConfig, loading: true);
     try {
       final dio = _dioFor(serverUrl, null);
       final repo = AuthRepository(dio);
-      final r = await repo.login(userName: userName, password: password, serverUrl: serverUrl);
-      final sess = SessionInfo(serverUrl: r.serverUrl.isNotEmpty ? r.serverUrl : serverUrl, token: r.token, userName: r.userName, mode: r.mode);
+      final r = await repo.login(userName: userName, password: password);
+      // The typed URL is the immich-swipe backend base. `r.serverUrl` is the
+      // Immich server resolved by the backend and must never become the API base.
+      final sess = SessionInfo(serverUrl: serverUrl, token: r.token, userName: r.userName, mode: r.mode);
       await ref.read(secureStoreProvider).saveSession(serverUrl: sess.serverUrl, token: sess.token, userName: sess.userName, mode: sess.mode);
       if (!r.hasApiKey) {
         state = SessionState(session: sess, oauthConfig: state.oauthConfig, needsApiKey: true, error: 'api_key_required');
@@ -107,8 +128,8 @@ class SessionNotifier extends StateNotifier<SessionState> {
     try {
       final dio = _dioFor(serverUrl, null);
       final repo = AuthRepository(dio);
-      final r = await repo.createAccount(userName: userName, password: password, apiKey: apiKey, serverUrl: serverUrl);
-      final sess = SessionInfo(serverUrl: r.serverUrl.isNotEmpty ? r.serverUrl : serverUrl, token: r.token, userName: r.userName, mode: r.mode);
+      final r = await repo.createAccount(userName: userName, password: password, apiKey: apiKey);
+      final sess = SessionInfo(serverUrl: serverUrl, token: r.token, userName: r.userName, mode: r.mode);
       await ref.read(secureStoreProvider).saveSession(serverUrl: sess.serverUrl, token: sess.token, userName: sess.userName, mode: sess.mode);
       state = SessionState(session: sess, oauthConfig: state.oauthConfig);
     } on AppException catch (e) {
@@ -125,20 +146,25 @@ class SessionNotifier extends StateNotifier<SessionState> {
     state = SessionState(session: s, oauthConfig: state.oauthConfig, needsApiKey: false);
   }
 
-  Future<Map<String, dynamic>> oauthStart({String? serverUrl}) async {
+  Future<Map<String, dynamic>> oauthStart({required String serverUrl}) async {
     final s = state.session;
-    // On the login screen there is no session yet, so the caller-supplied URL
-    // (the field the user typed) must be used instead of the localhost fallback.
-    final url = serverUrl ?? s?.serverUrl ?? 'http://localhost:8080';
+    final url = serverUrl.trim().isNotEmpty ? serverUrl.trim() : (s?.serverUrl ?? '');
+    if (url.isEmpty) {
+      throw AppException('server_url_required', 'Enter your server URL first');
+    }
     final dio = _dioFor(url, s?.token);
-    return AuthRepository(dio).oauthStart(serverUrl: url);
+    return AuthRepository(dio).oauthStart();
   }
 
-  Future<void> oauthFinish(String code, {String? serverUrl}) async {
-    final url = serverUrl ?? state.session?.serverUrl ?? 'http://localhost:8080';
+  Future<void> oauthFinish(String code, {required String serverUrl}) async {
+    final url = serverUrl.trim().isNotEmpty ? serverUrl.trim() : (state.session?.serverUrl ?? '');
+    if (url.isEmpty) {
+      throw AppException('server_url_required', 'Enter your server URL first');
+    }
     final dio = _dioFor(url, null);
     final r = await AuthRepository(dio).oauthFinish(code);
-    final sess = SessionInfo(serverUrl: r.serverUrl.isNotEmpty ? r.serverUrl : url, token: r.token, userName: r.userName, mode: r.mode);
+    // Persist the swipe backend URL, never the Immich server URL in the response.
+    final sess = SessionInfo(serverUrl: url, token: r.token, userName: r.userName, mode: r.mode);
     await ref.read(secureStoreProvider).saveSession(serverUrl: sess.serverUrl, token: sess.token, userName: sess.userName, mode: sess.mode);
     state = SessionState(session: sess, oauthConfig: state.oauthConfig);
   }
@@ -160,7 +186,7 @@ final sessionProvider = StateNotifierProvider<SessionNotifier, SessionState>((re
 // Dio bound to current session (or unauthenticated fallback)
 final dioProvider = Provider<Dio>((ref) {
   final sess = ref.watch(sessionProvider).session;
-  final url = sess?.serverUrl ?? 'http://localhost:8080';
+  final url = sess?.serverUrl ?? '';
   return ApiClient(serverUrl: url, token: sess?.token).dio;
 });
 

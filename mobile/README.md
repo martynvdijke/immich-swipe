@@ -13,7 +13,13 @@ flutter test
 flutter run
 ```
 
-The Server URL field ships **empty** with an example hint (`https://immich.example.com`) — there is no hardcoded default, so a release build never points at a developer machine. When running against a local backend on the Android emulator type `http://10.0.2.2:8080` (emulator loopback to the host); for a physical device use `http://<host-ip>:8080`.
+The Server URL field ships **empty** with an example hint (`https://immich.example.com`) — there is no hardcoded default and no loopback fallback, so a release build never points at a developer machine. When running against a local backend on the Android emulator type `http://10.0.2.2:8080` (emulator loopback to the host); for a physical device use `http://<host-ip>:8080`.
+
+That field is the **immich-swipe backend** base URL, not the Immich URL. The backend
+resolves the real Immich server from its own `IMMICH_SERVER_URL`. The app never sends
+the typed URL to `/auth/login` or `/auth/oauth/start` as Immich's `serverUrl`, and it
+always keeps the typed backend URL as its API base — even though login/SSO responses
+return the **Immich** URL in their `serverUrl` field.
 
 ## Local Android build (verified)
 
@@ -42,7 +48,7 @@ flutter clean
 
 All swipe-session calls are relative to `<serverUrl>/api` with header `Authorization: Bearer <swipe-session-token>`. The Go proxy strips that header and injects Immich credentials.
 
-- `POST /api/auth/login` `{userName,password,serverUrl?}` -> `{token,userName,serverUrl,mode:"apiKey"|"accessToken",hasApiKey}`. Creation variant adds `{create:true, apiKey?}`. Errors: 400 `weak_password`/`account_exists`, 401 `unknown_user`/`password_not_set`/`invalid_password`/`invalid_api_key`, 428 `api_key_required`.
+- `POST /api/auth/login` `{userName,password,serverUrl?}` -> `{token,userName,serverUrl,mode:"apiKey"|"accessToken",hasApiKey}`. Creation variant adds `{create:true, apiKey?}`. The Android app deliberately omits `serverUrl` (backend uses `IMMICH_SERVER_URL`) and ignores `serverUrl` in the response when choosing its API base. Errors: 400 `weak_password`/`account_exists`, 401 `unknown_user`/`password_not_set`/`invalid_password`/`invalid_api_key`, 428 `api_key_required`.
 - `POST /api/auth/account/apikey` `{apiKey}` (apiKey mode only)
 - `GET /api/auth/config` -> `{oauthEnabled,oauthButtonText}`
 - `POST /api/auth/oauth/start` `{serverUrl?}` -> `{url,state}` ; `POST /api/auth/oauth/finish` `{code}` -> session.
@@ -127,12 +133,22 @@ responses, and with/without `Content-Range`, and is not caused by this app's req
 - `applicationId` / package `xyz.vandijke.immich_swipe`
 - `android:label` = `Immich Swipe`
 - `INTERNET` permission in `AndroidManifest.xml`
+- Launcher icon mirrors the web favicon (`public/favicon.svg`): indigo/violet
+  gradient (#4f46e5 → #7c3aed), white photo frame, lavender mountains and a
+  yellow sun. Adaptive icon (`mipmap-anydpi-v26/`) with gradient background,
+  foreground, and a monochrome layer for Android 13+ themed icons; legacy PNGs
+  (48–192 px, square + round) for older launchers; `android:roundIcon` is set.
+- In-app brand mark: `mobile/assets/branding/app_icon.png` (1024 px export).
 
 ## SSO (in-app browser)
 
 `GET /api/auth/config` drives whether the SSO button is shown. Availability is
-checked for the URL currently in the Server URL field (on focus loss) as well as
-after a session restore, so a fresh install can use SSO too.
+checked for the URL currently in the Server URL field — debounced 400 ms while
+typing and immediately on focus loss — as well as after a session restore, so a
+fresh install can use SSO without having to blur the field first. Until a check
+succeeds the UI says *Checking SSO availability…* rather than claiming SSO is
+disabled. Changing the URL invalidates the previous result (stale responses are
+ignored).
 
 Tapping the button calls `POST /api/auth/oauth/start` and runs the returned
 Immich authorize URL inside `OAuthWebViewScreen` (`webview_flutter`), an in-app

@@ -6,7 +6,6 @@ import 'package:immich_swipe/core/format.dart';
 import 'package:immich_swipe/core/oauth.dart';
 import 'package:immich_swipe/core/secure_store.dart';
 import 'package:immich_swipe/features/auth/login_screen.dart';
-import 'package:immich_swipe/models/session.dart';
 import 'package:immich_swipe/state/providers.dart';
 
 class _FakeStore extends SecureStore {
@@ -89,26 +88,22 @@ void main() {
     };
     addTearDown(() => FlutterError.onError = oldOnError);
     final container = ProviderContainer(overrides: [
-      dioProvider.overrideWithValue(_stubDio(oauthEnabled: true)),
+      authDioFactoryProvider.overrideWithValue((_, _) => _stubDio(oauthEnabled: true)),
       secureStoreProvider.overrideWithValue(_FakeStore()),
     ]);
     addTearDown(container.dispose);
-    container.read(sessionProvider.notifier).state =
-        SessionState(oauthConfig: AuthConfig(oauthEnabled: true, oauthButtonText: 'MockSSO'));
     await t.pumpWidget(
         UncontrolledProviderScope(container: container, child: const MaterialApp(home: LoginScreen())));
     await t.pump();
-    await t.pump(const Duration(milliseconds: 50));
+
+    // The typed URL is the swipe backend; the debounced config probe enables SSO.
+    await t.enterText(find.widgetWithText(TextField, 'Server URL'), 'https://swipe.example.com');
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 500));
+    await t.pump();
 
     expect(find.text('Sign in with MockSSO'), findsOneWidget);
     expect(find.text('Finish SSO login'), findsOneWidget);
-
-    // With no server URL there is nothing to start SSO against: the guard message
-    // must appear instead of pushing a WebView.
-    await t.ensureVisible(find.text('Sign in with MockSSO'));
-    await t.tap(find.text('Sign in with MockSSO'));
-    await t.pump();
-    expect(find.textContaining('Enter your server URL first'), findsOneWidget);
   });
 
   testWidgets('LoginScreen explains when the server has SSO disabled', (t) async {
@@ -118,16 +113,18 @@ void main() {
     };
     addTearDown(() => FlutterError.onError = oldOnError);
     final container = ProviderContainer(overrides: [
-      dioProvider.overrideWithValue(_stubDio(oauthEnabled: false)),
+      authDioFactoryProvider.overrideWithValue((_, _) => _stubDio(oauthEnabled: false)),
       secureStoreProvider.overrideWithValue(_FakeStore()),
     ]);
     addTearDown(container.dispose);
-    container.read(sessionProvider.notifier).state =
-        SessionState(oauthConfig: AuthConfig(oauthEnabled: false, oauthButtonText: 'SSO'));
     await t.pumpWidget(
         UncontrolledProviderScope(container: container, child: const MaterialApp(home: LoginScreen())));
     await t.pump();
-    await t.pump(const Duration(milliseconds: 50));
+
+    await t.enterText(find.widgetWithText(TextField, 'Server URL'), 'https://swipe.example.com');
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 500));
+    await t.pump();
 
     expect(find.textContaining('SSO disabled on this server'), findsOneWidget);
     expect(find.text('Finish SSO login'), findsNothing);
