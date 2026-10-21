@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/martynvdijke/immich-swipe/compare/v1.14.5...v1.15.0) (2026-10-21)
+
+
+### Features
+
+* **android:** enable OIDC login and brand the app icon ([f9179fc](https://github.com/martynvdijke/immich-swipe/commit/f9179fc6fe99b23ee6a7abf380a5fe51a59fd660))
+
 ## [1.14.5](https://github.com/martynvdijke/immich-swipe/compare/v1.14.4...v1.14.5) (2026-10-20)
 
 
