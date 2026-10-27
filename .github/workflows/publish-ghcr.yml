@@ -193,3 +193,14 @@ jobs:
           notification_title: 'Release Failed'
           notification_message: 'The release workflow has failed. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
           notification_priority: 5
+
+  play-store:
+    name: Play Store
+    needs: [release]
+    if: needs.release.result == 'success' && needs.release.outputs.new_release_version != ''
+    uses: ./.github/workflows/play-store.yaml
+    with:
+      version: ${{ needs.release.outputs.new_release_version }}
+    secrets: inherit
+    permissions:
+      contents: read
