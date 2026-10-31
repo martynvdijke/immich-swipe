@@ -1,3 +1,21 @@
+# [1.16.0](https://github.com/martynvdijke/immich-swipe/compare/v1.15.0...v1.16.0) (2026-10-31)
+
+
+### Bug Fixes
+
+* **ci:** point flutter setup at root fvmrc ([4d18c4a](https://github.com/martynvdijke/immich-swipe/commit/4d18c4a3a16840fee65222f1a4ffcaf23f343aa4))
+* **deps:** restore compatible opentelemetry versions ([bbafe53](https://github.com/martynvdijke/immich-swipe/commit/bbafe5352167f481b128291afe1cd9f6bedb467b))
+* **deps:** update all non-major dependencies ([cd2bd2e](https://github.com/martynvdijke/immich-swipe/commit/cd2bd2eca7f06aaaeaaedf7fa2a1c813ec42b1ca))
+* **deps:** update all non-major dependencies ([6409fdf](https://github.com/martynvdijke/immich-swipe/commit/6409fdfbdade0a5d93b9689e5bd388a4c289a26e))
+* **deps:** update dependency flutter_riverpod to v3 ([d2407f4](https://github.com/martynvdijke/immich-swipe/commit/d2407f4625ad1921ad435cce7fa57b040867fc7b))
+* **mobile:** import Riverpod 3 legacy providers and disable auto-retry ([c1e9584](https://github.com/martynvdijke/immich-swipe/commit/c1e9584605d9020c0988f9fcd1eceeaa8bd97d52))
+
+
+### Features
+
+* **mobile:** default to immich-swipe.vandijke.xyz and offer self-hosted option ([ae71a7b](https://github.com/martynvdijke/immich-swipe/commit/ae71a7b39e458183a6e458c2e618b8c8c09bc2be))
+* **release:** publish android bundles to google play and add emulator e2e ([82d6115](https://github.com/martynvdijke/immich-swipe/commit/82d611510df07fd7c7d8479b03d5ceb6144fadfc))
+
 # [1.15.0](https://github.com/martynvdijke/immich-swipe/compare/v1.14.5...v1.15.0) (2026-10-21)
 
 
