@@ -6,7 +6,11 @@ import 'features/review/review_screen.dart';
 import 'theme/app_theme.dart';
 
 void main() {
-  runApp(const ProviderScope(child: MyApp()));
+  runApp(ProviderScope(
+    // Preserve v2 behaviour: surface errors instead of silently retrying forever.
+    retry: (retryCount, error) => null,
+    child: const MyApp(),
+  ));
 }
 
 class MyApp extends ConsumerWidget {
