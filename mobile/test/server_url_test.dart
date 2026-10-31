@@ -2,15 +2,20 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:immich_swipe/core/app_config.dart';
 import 'package:immich_swipe/core/secure_store.dart';
 import 'package:immich_swipe/features/auth/login_screen.dart';
 import 'package:immich_swipe/state/providers.dart';
 
 class _FakeStore extends SecureStore {
   String? savedUrl;
+  String? lastServerUrl;
 
   @override
   Future<Map<String, String?>> readSession() async => {};
+
+  @override
+  Future<String?> readLastServerUrl() async => lastServerUrl;
 
   @override
   Future<void> saveSession(
@@ -125,6 +130,59 @@ void main() {
     final okNull = await c.read(sessionProvider.notifier).fetchConfigFor(null);
     expect(okNull, isFalse);
     expect(requests, isEmpty);
+  });
+
+  testWidgets('LoginScreen prefills the hosted default when no server URL is saved', (t) async {
+    final oldOnError = FlutterError.onError;
+    FlutterError.onError = (d) {
+      if (!d.toString().contains('overflowed')) oldOnError?.call(d);
+    };
+    addTearDown(() => FlutterError.onError = oldOnError);
+
+    final container = ProviderContainer(overrides: [
+      authDioFactoryProvider.overrideWithValue((_, _) => _capturingDio([])),
+      secureStoreProvider.overrideWithValue(_FakeStore()),
+    ]);
+    addTearDown(container.dispose);
+
+    await t.pumpWidget(
+        UncontrolledProviderScope(container: container, child: const MaterialApp(home: LoginScreen())));
+    await t.pump();
+
+    final field = t.widget<TextField>(find.widgetWithText(TextField, 'Server URL'));
+    expect(field.controller?.text, kDefaultServerUrl);
+    expect(
+        find.text('Use the default instance below, or enter another self-hosted Immich server.'), findsOneWidget);
+  });
+
+  testWidgets('LoginScreen keeps a previously saved server URL instead of the default', (t) async {
+    final oldOnError = FlutterError.onError;
+    FlutterError.onError = (d) {
+      if (!d.toString().contains('overflowed')) oldOnError?.call(d);
+    };
+    addTearDown(() => FlutterError.onError = oldOnError);
+
+    final store = _FakeStore()..lastServerUrl = 'https://selfhosted.example.com';
+    final dio = _capturingDio([], respond: (o) {
+      if (o.path.contains('/auth/config')) return {'oauthEnabled': false};
+      return {};
+    });
+    final container = ProviderContainer(overrides: [
+      authDioFactoryProvider.overrideWithValue((_, _) => dio),
+      secureStoreProvider.overrideWithValue(store),
+    ]);
+    addTearDown(container.dispose);
+
+    await t.pumpWidget(
+        UncontrolledProviderScope(container: container, child: const MaterialApp(home: LoginScreen())));
+    // Let the async secure-store read resolve and the debounced SSO probe finish.
+    await t.pump();
+    await t.pump(const Duration(milliseconds: 500));
+    await t.pump();
+
+    final field = t.widget<TextField>(find.widgetWithText(TextField, 'Server URL'));
+    expect(field.controller?.text, 'https://selfhosted.example.com');
+    expect(field.controller?.text, isNot(kDefaultServerUrl));
   });
 
   testWidgets('LoginScreen reveals SSO after typing a server URL (debounced probe)', (t) async {
