@@ -8,6 +8,7 @@ class SecureStore {
   final FlutterSecureStorage _storage;
 
   static const _kServerUrl = 'serverUrl';
+  static const _kLastServerUrl = 'lastServerUrl';
   static const _kToken = 'sessionToken';
   static const _kUserName = 'userName';
   static const _kMode = 'mode';
@@ -21,6 +22,9 @@ class SecureStore {
     required String mode,
   }) async {
     await _storage.write(key: _kServerUrl, value: serverUrl);
+    // Keep the last chosen backend around even after the session is cleared, so
+    // the login screen can prefill it instead of the hosted default.
+    await _storage.write(key: _kLastServerUrl, value: serverUrl);
     await _storage.write(key: _kToken, value: token);
     await _storage.write(key: _kUserName, value: userName);
     await _storage.write(key: _kMode, value: mode);
@@ -33,6 +37,20 @@ class SecureStore {
       'userName': await _storage.read(key: _kUserName),
       'mode': await _storage.read(key: _kMode),
     };
+  }
+
+  /// The backend URL from the most recent successful login, regardless of
+  /// whether a session still exists. Falls back to the current session's URL so
+  /// accounts saved before this preference existed keep their server. Returns
+  /// null when nothing was saved.
+  Future<String?> readLastServerUrl() async {
+    try {
+      final value = await _storage.read(key: _kLastServerUrl) ??
+          await _storage.read(key: _kServerUrl);
+      return value == null || value.trim().isEmpty ? null : value;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> clearSession() async {

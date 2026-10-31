@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/providers.dart';
 import '../../core/api_client.dart';
+import '../../core/app_config.dart';
 import 'oauth_webview_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -23,6 +24,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   String? _error;
   bool _needsApiKey = false;
   bool _obscure = true;
+  bool _probing = false;
   final _serverFocus = FocusNode();
   Timer? _ssoDebounce;
   bool _ssoChecked = false;
@@ -30,6 +32,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   void initState() {
     super.initState();
+    // First run points at the hosted instance. A previously saved backend URL
+    // replaces this once storage has been read (see _loadSavedServerUrl).
+    _serverCtrl.text = kDefaultServerUrl;
     // OAuth availability comes from GET /api/auth/config, which is otherwise only
     // fetched after a session exists — so a fresh install would never surface the
     // SSO button. Probe the typed server after a short debounce while typing, and
@@ -41,16 +46,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         _checkOauthConfig();
       }
     });
+    _loadSavedServerUrl();
+  }
+
+  /// Loads the last successful backend URL. Storage wins over the hosted default
+  /// but never over a URL the user has already typed.
+  Future<void> _loadSavedServerUrl() async {
+    final saved = await ref.read(secureStoreProvider).readLastServerUrl();
+    if (!mounted || saved == null) return;
+    if (_serverCtrl.text.trim() != kDefaultServerUrl) return;
+    if (saved.trim() == kDefaultServerUrl) return;
+    _serverCtrl.text = saved.trim();
   }
 
   void _onServerChanged() {
     _ssoDebounce?.cancel();
     if (!mounted) return;
+    final url = _serverCtrl.text.trim();
     setState(() {
       _ssoChecked = false;
+      _probing = url.isNotEmpty;
       ref.read(sessionProvider.notifier).clearOauthConfig();
     });
-    final url = _serverCtrl.text.trim();
     if (url.isEmpty) return;
     _ssoDebounce = Timer(const Duration(milliseconds: 400), _checkOauthConfig);
   }
@@ -58,11 +75,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Future<void> _checkOauthConfig() async {
     final url = _serverCtrl.text.trim();
     if (url.isEmpty) return;
+    if (mounted) setState(() => _probing = true);
     final ok = await ref.read(sessionProvider.notifier).fetchConfigFor(url);
     if (!mounted) return;
     // Ignore a stale result if the field changed while the request was in flight.
     if (_serverCtrl.text.trim() != url) return;
-    setState(() => _ssoChecked = ok);
+    setState(() {
+      _ssoChecked = ok;
+      _probing = false;
+    });
   }
 
   @override
@@ -81,8 +102,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final url = _serverCtrl.text.trim();
     final user = _userCtrl.text.trim();
     final pass = _passCtrl.text;
-    // The server URL field ships empty (no dev-loopback default), so validate
-    // before hitting the network instead of failing with a dio error.
+    // The server URL is prefilled with the hosted instance but remains editable,
+    // so validate before hitting the network instead of failing with a dio error.
     if (url.isEmpty || user.isEmpty || pass.isEmpty) {
       setState(() => _error = 'Server URL, user name and password are required');
       return;
@@ -300,9 +321,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ]),
               ),
               const SizedBox(height: 20),
+              Text('Use the default instance below, or enter another self-hosted Immich server.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 12)),
+              const SizedBox(height: 8),
               TextField(
                   controller: _serverCtrl,
                   focusNode: _serverFocus,
+                  keyboardType: TextInputType.url,
+                  autocorrect: false,
                   decoration: const InputDecoration(
                       labelText: 'Server URL', hintText: 'https://immich.example.com', border: OutlineInputBorder())),
               const SizedBox(height: 12),
@@ -393,7 +419,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   child: Text('SSO disabled on this server (GET /api/auth/config oauthEnabled=false).',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 12)),
                 )
-              else if (_serverCtrl.text.trim().isNotEmpty)
+              else if (_probing)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
                   child: Text('Checking SSO availability…',
