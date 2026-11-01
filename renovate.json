@@ -35,6 +35,33 @@
       "enabled": true
     },
     {
+      "description": "Hold OpenTelemetry API 1.10 until sdk-trace-web supports it.",
+      "matchPackageNames": [
+        "@opentelemetry/api"
+      ],
+      "allowedVersions": "<1.10.0"
+    },
+    {
+      "description": "Hold OpenTelemetry 0.300 instrumentation/exporters until sdk-trace-web supports SDK 3.0.",
+      "matchPackageNames": [
+        "@opentelemetry/exporter-metrics-otlp-http",
+        "@opentelemetry/exporter-trace-otlp-http",
+        "@opentelemetry/instrumentation",
+        "@opentelemetry/instrumentation-fetch",
+        "@opentelemetry/instrumentation-xml-http-request"
+      ],
+      "allowedVersions": "<0.300.0"
+    },
+    {
+      "description": "Hold OpenTelemetry SDK 3.0 until sdk-trace-web supports it.",
+      "matchPackageNames": [
+        "@opentelemetry/resources",
+        "@opentelemetry/sdk-metrics",
+        "@opentelemetry/sdk-trace-web"
+      ],
+      "allowedVersions": "<3.0.0"
+    },
+    {
       "matchUpdateTypes": [
         "major",
         "minor",
