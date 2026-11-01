@@ -1,3 +1,10 @@
+## [1.16.1](https://github.com/martynvdijke/immich-swipe/compare/v1.16.0...v1.16.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **ci:** skip Play Store publish when credentials are missing ([50563fd](https://github.com/martynvdijke/immich-swipe/commit/50563fdd78f35e2bb49074d8d259d53b6e0eb953))
+
 # [1.16.0](https://github.com/martynvdijke/immich-swipe/compare/v1.15.0...v1.16.0) (2026-10-31)
 
 
