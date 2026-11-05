@@ -43,6 +43,13 @@ export const useAuthStore = defineStore('auth', () => {
   /** Immich-native OAuth/SSO availability (from GET /api/auth/config). */
   const oauthEnabled = ref(false)
   const oauthButtonText = ref('')
+  /** Shared demo account (from GET /api/auth/config; off unless the operator
+   *  enables it). The values are intentionally public — the demo is meant to
+   *  be used by anyone visiting the login page. */
+  const demoEnabled = ref(false)
+  const demoUserName = ref('')
+  const demoPassword = ref('')
+  const demoServerUrl = ref('')
   /** Double-submit CSRF token mirrored from GET /api/auth/config. */
   const csrfToken = ref('')
   // Set by the 401 handler / failed auto-login to prevent the router guard
@@ -221,6 +228,10 @@ export const useAuthStore = defineStore('auth', () => {
         serverVersion.value = data.version || ''
         oauthEnabled.value = data.oauthEnabled === true
         oauthButtonText.value = typeof data.oauthButtonText === 'string' ? data.oauthButtonText : ''
+        demoEnabled.value = data.demoEnabled === true
+        demoUserName.value = typeof data.demoUserName === 'string' ? data.demoUserName : ''
+        demoPassword.value = typeof data.demoPassword === 'string' ? data.demoPassword : ''
+        demoServerUrl.value = typeof data.demoServerUrl === 'string' ? data.demoServerUrl : ''
         csrfToken.value = typeof data.csrfToken === 'string' ? data.csrfToken : ''
       }
     } catch {
@@ -529,6 +540,64 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * Download the app-local account data as JSON. The backend returns profile,
+   * counters and session metadata only — never API keys or session tokens.
+   */
+  async function exportAccount(): Promise<{ ok: true; data: unknown } | { ok: false; error: string }> {
+    try {
+      const res = await fetch('/api/auth/account/export', { headers: { ...authHeader.value } })
+      if (!res.ok) {
+        const { error } = await parseLoginResult(res, 'Could not export account data')
+        return { ok: false, error }
+      }
+      return { ok: true, data: await res.json() }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
+  /** Remove browser-side per-user data that belongs to a deleted identity. */
+  function clearIdentityLocalState(serverUrl: string, userName: string): void {
+    const scope = `${serverUrl || 'unknown-server'}:${userName || 'default-user'}`
+    for (const prefix of [
+      'immich-swipe-reviewed',
+      'immich-swipe-preferences',
+      'immich-swipe-observability',
+      'immich-swipe-stats',
+    ]) {
+      localStorage.removeItem(`${prefix}:${scope}`)
+    }
+  }
+
+  /**
+   * Erase the authenticated app account after a typed confirmation. The server
+   * deletes the account row, all sessions (and the Immich credentials inside
+   * them) and the counters. Photos and the Immich account remain on the user's
+   * Immich server and are not touched.
+   */
+  async function deleteAccount(confirm: string): Promise<LoginResult> {
+    const active = activeSession.value
+    if (!active) return { ok: false, error: 'You are not signed in' }
+    try {
+      const res = await fetch('/api/auth/account', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', ...csrfHeaders() },
+        body: JSON.stringify({ confirm }),
+      })
+      if (!res.ok) {
+        const { error, code } = await parseLoginResult(res, 'Could not delete account')
+        return { ok: false, error, code }
+      }
+      clearIdentityLocalState(active.serverUrl, active.userName)
+      removeRecord(sessionKey(active.serverUrl, active.userName))
+      autoLoginBlocked.value = false
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Cannot reach server. Please try again.' }
+    }
+  }
+
   async function setAccountEmail(email: string): Promise<LoginResult> {
     try {
       const res = await fetch('/api/auth/account/email', {
@@ -557,6 +626,10 @@ export const useAuthStore = defineStore('auth', () => {
     serverVersion,
     oauthEnabled,
     oauthButtonText,
+    demoEnabled,
+    demoUserName,
+    demoPassword,
+    demoServerUrl,
     autoLoginBlocked,
     isLoggedIn,
     authHeader,
@@ -578,5 +651,7 @@ export const useAuthStore = defineStore('auth', () => {
     forgotPassword,
     resetPassword,
     setAccountEmail,
+    exportAccount,
+    deleteAccount,
   }
 })

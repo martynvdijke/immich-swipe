@@ -3,7 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// Persistent auth + reviewed-set storage backed by flutter_secure_storage.
 class SecureStore {
   SecureStore({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage();
+    : _storage = storage ?? const FlutterSecureStorage();
 
   final FlutterSecureStorage _storage;
 
@@ -45,7 +45,8 @@ class SecureStore {
   /// null when nothing was saved.
   Future<String?> readLastServerUrl() async {
     try {
-      final value = await _storage.read(key: _kLastServerUrl) ??
+      final value =
+          await _storage.read(key: _kLastServerUrl) ??
           await _storage.read(key: _kServerUrl);
       return value == null || value.trim().isEmpty ? null : value;
     } catch (_) {
@@ -60,6 +61,14 @@ class SecureStore {
     await _storage.delete(key: _kMode);
   }
 
+  /// Removes the persisted "already reviewed" photo IDs for one account.
+  ///
+  /// Used by account deletion (not by sign-out): those IDs are personal data
+  /// about which photos the user has seen, so they must not outlive the account.
+  Future<void> clearReviewed(String serverUrl, String userName) async {
+    await _storage.delete(key: _reviewedKey(serverUrl, userName));
+  }
+
   String _reviewedKey(String serverUrl, String userName) =>
       '$_kReviewedPrefix${serverUrl}_$userName';
 
@@ -70,8 +79,14 @@ class SecureStore {
   }
 
   Future<void> writeReviewed(
-      String serverUrl, String userName, Set<String> ids) async {
-    await _storage.write(key: _reviewedKey(serverUrl, userName), value: ids.join(','));
+    String serverUrl,
+    String userName,
+    Set<String> ids,
+  ) async {
+    await _storage.write(
+      key: _reviewedKey(serverUrl, userName),
+      value: ids.join(','),
+    );
   }
 
   Future<void> addReviewed(String serverUrl, String userName, String id) async {

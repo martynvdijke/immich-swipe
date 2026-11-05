@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"io"
 	"log"
 	"log/slog"
@@ -54,7 +55,26 @@ type Config struct {
 	SMTPPass      string
 	SMTPFrom      string
 	SMTPTLS       string // starttls|ssl|none
-	Users         []UserConfig
+
+	// Legal operator identity published on the public /privacy, /terms and
+	// /account/delete pages. All optional; empty values fall back to text that
+	// does not invent a controller name or contact address.
+	LegalControllerName string
+	LegalContactEmail   string
+	LegalContactAddress string
+	LegalHostingRegion  string
+
+	// Demo account (optional). When enabled, the server idempotently ensures a
+	// local account with these credentials exists, and the public auth config
+	// exposes them so app-store reviewers can sign in without Immich access.
+	DemoUserEnabled   bool
+	DemoUserName      string
+	DemoUserPassword  string
+	DemoUserAPIKey    string
+	DemoUserServerURL string // "" = fall back to ServerURL
+	DemoUserEmail     string
+
+	Users []UserConfig
 }
 
 func loadConfig() Config {
@@ -77,6 +97,18 @@ func loadConfig() Config {
 		SMTPPass:      os.Getenv("SMTP_PASS"),
 		SMTPFrom:      os.Getenv("SMTP_FROM"),
 		SMTPTLS:       strings.ToLower(strings.TrimSpace(getEnv("SMTP_TLS", ""))),
+
+		LegalControllerName: strings.TrimSpace(os.Getenv("LEGAL_CONTROLLER_NAME")),
+		LegalContactEmail:   strings.TrimSpace(os.Getenv("LEGAL_CONTACT_EMAIL")),
+		LegalContactAddress: strings.TrimSpace(os.Getenv("LEGAL_CONTACT_ADDRESS")),
+		LegalHostingRegion:  strings.TrimSpace(os.Getenv("LEGAL_HOSTING_REGION")),
+
+		DemoUserEnabled:   envBool("DEMO_USER_ENABLED", false),
+		DemoUserName:      getEnv("DEMO_USER_NAME", "demo"),
+		DemoUserPassword:  getEnv("DEMO_USER_PASSWORD", "demo"),
+		DemoUserAPIKey:    strings.TrimSpace(os.Getenv("DEMO_USER_API_KEY")),
+		DemoUserServerURL: strings.TrimSpace(os.Getenv("DEMO_USER_SERVER_URL")),
+		DemoUserEmail:     strings.TrimSpace(os.Getenv("DEMO_USER_EMAIL")),
 	}
 	for i := 1; ; i++ {
 		// Primary naming: IMMICH_API_KEY_<N>_NAME / IMMICH_API_KEY_<N>_KEY
@@ -104,6 +136,20 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envBool parses a permissive boolean environment variable.
+func envBool(key string, fallback bool) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // ─── Session Store ─────────────────────────────────────────────────────────
@@ -381,6 +427,47 @@ func (s *SessionStore) Delete(token string) {
 	s.deleteRow(token)
 }
 
+// SessionsFor returns copies of every live session belonging to one
+// (serverURL, userName) identity. It is used by account export (metadata only)
+// and by account deletion to revoke credentials before the rows disappear.
+func (s *SessionStore) SessionsFor(serverURL, userName string) []*Session {
+	now := time.Now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*Session, 0)
+	for _, session := range s.sessions {
+		if session.ServerURL != serverURL || session.UserName != userName {
+			continue
+		}
+		if now.After(session.ExpiresAt) {
+			continue
+		}
+		copied := *session
+		out = append(out, &copied)
+	}
+	return out
+}
+
+// DeleteAllFor removes every in-memory and persisted session for one
+// (serverURL, userName) identity and returns how many were deleted.
+func (s *SessionStore) DeleteAllFor(serverURL, userName string) int {
+	s.mu.Lock()
+	deleted := 0
+	for token, session := range s.sessions {
+		if session.ServerURL == serverURL && session.UserName == userName {
+			delete(s.sessions, token)
+			deleted++
+		}
+	}
+	s.mu.Unlock()
+	if s.db != nil {
+		if _, err := s.db.Exec(`DELETE FROM sessions WHERE server_url = ? AND user_name = ?`, serverURL, userName); err != nil {
+			log.Printf("Warning: cannot delete sessions for %q: %v", userName, err)
+		}
+	}
+	return deleted
+}
+
 func (s *SessionStore) deleteRow(token string) {
 	if s.db == nil {
 		return
@@ -442,6 +529,7 @@ func NewServer(cfg Config) *Server {
 	// accounts so existing users keep working.
 	s.session = NewSessionStore(cfg.SessionDBFile)
 	s.accounts = NewAccountStore(s.session.db, cfg.Users, cfg.ServerURL)
+	s.ensureDemoAccount()
 	// Restore persisted stats on startup when a stats file is configured.
 	// On any file error we log a warning and continue with in-memory only.
 	if cfg.StatsFile != "" {
@@ -459,7 +547,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// CSRF protection for cookie-authenticated mutations. Safe methods are
 	// untouched; legacy Bearer-only clients (no cookies) keep working.
-	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+	// The OAuth callback is exempt: it is a cross-site form_post/redirect from
+	// the IdP, protected by the single-use state + PKCE instead.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions &&
+		path != "/api/auth/oauth/callback" {
 		if !s.allowUnsafeRequest(r) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid or missing CSRF token", "code": "csrf_failed"})
 			return
@@ -488,8 +579,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/api/auth/oauth/finish":
 		s.oauthFinishHandler(w, r)
 
+	case path == "/oauth/mobile":
+		s.oauthMobileHandler(w, r)
+
 	case path == "/api/auth/account":
-		s.authMiddleware(http.HandlerFunc(s.accountHandler)).ServeHTTP(w, r)
+		if r.Method == http.MethodDelete {
+			s.authMiddleware(http.HandlerFunc(s.deleteAccountHandler)).ServeHTTP(w, r)
+		} else {
+			s.authMiddleware(http.HandlerFunc(s.accountHandler)).ServeHTTP(w, r)
+		}
+
+	case path == "/api/auth/account/export":
+		s.authMiddleware(http.HandlerFunc(s.exportAccountHandler)).ServeHTTP(w, r)
 
 	case path == "/api/auth/account/apikey":
 		s.authMiddleware(http.HandlerFunc(s.apiKeyHandler)).ServeHTTP(w, r)
@@ -521,6 +622,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.authMiddleware(http.HandlerFunc(s.emailSettingsPutHandler)).ServeHTTP(w, r)
 		}
+
+	case path == "/api/legal":
+		s.legalConfigHandler(w, r)
 
 	case path == "/api/trmnl/stats":
 		// Public Trmnl e-ink polling endpoint. Registered before the /api/
@@ -557,13 +661,23 @@ func (s *Server) configHandler(w http.ResponseWriter, r *http.Request) {
 
 	csrfToken := s.ensureCSRFCookie(w, r)
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	payload := map[string]interface{}{
 		"defaultServerUrl": s.config.ServerURL,
 		"version":          Version,
 		"oauthEnabled":     oauthEnabled,
 		"oauthButtonText":  oauthButtonText,
 		"csrfToken":        csrfToken,
-	})
+	}
+	// Demo credentials are intentionally public (Play reviewers need them).
+	// The API key is never exposed.
+	if serverURL, userName, password, ok := s.config.demoCredentials(); ok {
+		payload["demoEnabled"] = true
+		payload["demoUserName"] = userName
+		payload["demoPassword"] = password
+		payload["demoServerUrl"] = serverURL
+	}
+
+	writeJSON(w, http.StatusOK, payload)
 }
 
 // ─── Session helpers ───────────────────────────────────────────────────────
@@ -839,6 +953,7 @@ type oauthPending struct {
 	Cookies      []*http.Cookie // immich_oauth_* cookies set by Immich authorize
 	ServerURL    string
 	RedirectURI  string // exact redirect_uri sent to Immich at start; reused at callback
+	Client       string // "" = browser/SPA, "mobile" = in-app WebView handoff
 	ExpiresAt    time.Time
 }
 
@@ -851,7 +966,7 @@ type oauthCode struct {
 }
 
 const (
-	oauthPendingTTL = 10 * time.Minute
+	oauthPendingTTL = 15 * time.Minute
 	oauthCodeTTL    = 5 * time.Minute
 )
 
@@ -891,9 +1006,10 @@ func (s *Server) immichOAuthConfig(serverURL string) (enabled bool, buttonText s
 	return cfg.OAuth.Enabled, cfg.OAuth.ButtonText
 }
 
-// oauthPublicBase is the external base URL of this server, used as the OAuth
-// redirect_uri. Prefers SWIPE_PUBLIC_URL; otherwise derives scheme+host from
-// the request (honoring X-Forwarded-Proto/Host behind reverse proxies).
+// oauthPublicBase is the external base URL of this server, used for the OAuth
+// redirect_uri and the post-login browser redirects. Prefers SWIPE_PUBLIC_URL
+// (including any configured path prefix); otherwise derives scheme+host from
+// the request (honoring X-Forwarded-Proto/Host/Prefix behind reverse proxies).
 func (s *Server) oauthPublicBase(r *http.Request) string {
 	if s.config.PublicURL != "" {
 		return strings.TrimRight(s.config.PublicURL, "/")
@@ -903,13 +1019,21 @@ func (s *Server) oauthPublicBase(r *http.Request) string {
 		scheme = "https"
 	}
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		scheme = strings.ToLower(strings.Split(proto, ",")[0])
+		scheme = strings.ToLower(strings.TrimSpace(strings.Split(proto, ",")[0]))
 	}
 	host := r.Host
 	if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
-		host = strings.Split(fwdHost, ",")[0]
+		host = strings.TrimSpace(strings.Split(fwdHost, ",")[0])
 	}
-	return scheme + "://" + strings.TrimSpace(host)
+	prefix := ""
+	if fwdPrefix := r.Header.Get("X-Forwarded-Prefix"); fwdPrefix != "" {
+		prefix = strings.TrimSpace(strings.Split(fwdPrefix, ",")[0])
+	}
+	prefix = strings.TrimRight(prefix, "/")
+	if prefix != "" && !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	return scheme + "://" + host + prefix
 }
 
 // oauthPostJSON posts a JSON body to Immich, replaying cookies. It returns the
@@ -947,6 +1071,7 @@ func (s *Server) oauthStartHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot read request body"})
@@ -955,6 +1080,7 @@ func (s *Server) oauthStartHandler(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	var req struct {
 		ServerURL string `json:"serverUrl"`
+		Client    string `json:"client"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -1038,6 +1164,7 @@ func (s *Server) oauthStartHandler(w http.ResponseWriter, r *http.Request) {
 		Cookies:      authResp.Cookies(),
 		ServerURL:    serverURL,
 		RedirectURI:  redirectURI,
+		Client:       strings.TrimSpace(req.Client),
 		ExpiresAt:    now.Add(oauthPendingTTL),
 	}
 	s.oauthMu.Unlock()
@@ -1046,41 +1173,169 @@ func (s *Server) oauthStartHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"url": authorize.URL, "state": state})
 }
 
-// oauthCallbackHandler handles the IdP redirect: it validates state,
-// completes the Immich callback, creates the swipe session, and hands the
-// browser a single-use code via a 302 to /login.
+// oauthRedirect builds the absolute post-login redirect URL for the handoff
+// client: "mobile" WebViews get a static page that does not consume the code,
+// everything else gets the SPA's /login route.
+func (s *Server) oauthRedirect(r *http.Request, client string, params url.Values) string {
+	base := s.oauthPublicBase(r)
+	if client == "mobile" {
+		return base + "/oauth/mobile?" + params.Encode()
+	}
+	return base + "/login?" + params.Encode()
+}
+
+// oauthErrorParams forwards IdP error fields instead of collapsing every
+// failure into an opaque invalid_state.
+func oauthErrorParams(values url.Values) url.Values {
+	params := url.Values{}
+	params.Set("oauthError", values.Get("error"))
+	if d := values.Get("error_description"); d != "" {
+		params.Set("oauthErrorDescription", d)
+	}
+	if u := values.Get("error_uri"); u != "" {
+		params.Set("oauthErrorUri", u)
+	}
+	return params
+}
+
+// oauthMobileTemplate is a standalone page (no SPA, no API calls, no JS) that
+// hands the one-time code back to the in-app WebView without letting the Vue
+// app burn it.
+var oauthMobileTemplate = template.Must(template.New("oauth-mobile").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign-in complete</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         margin: 0; padding: 32px 24px; line-height: 1.5;
+         background: #0f172a; color: #e2e8f0; }
+  main { max-width: 34rem; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 0.75rem; }
+  p { margin: 0.75rem 0; }
+  code { display: block; margin: 1.25rem 0; padding: 0.9rem 1rem;
+         background: #1e293b; border: 1px solid #334155; border-radius: 8px;
+         font-size: 0.95rem; word-break: break-all; }
+  .error { color: #fca5a5; }
+  .hint { color: #94a3b8; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>{{if .Error}}Sign-in failed{{else}}Sign-in complete{{end}}</h1>
+  {{if .Error}}
+  <p class="error">The identity provider reported an error: <strong>{{.Error}}</strong></p>
+  {{if .ErrorDescription}}<p class="error">{{.ErrorDescription}}</p>{{end}}
+  <p class="hint">Close this page and try signing in again from the app.</p>
+  {{else}}
+  <p>Return to the Swipe app to finish signing in. You can close this page.</p>
+  <p class="hint">If the app asks for a code, use:</p>
+  <code>{{.Code}}</code>
+  {{end}}
+</main>
+</body>
+</html>
+`))
+
+// oauthMobileHandler serves the mobile handoff page. Public (no auth) because
+// it is the IdP-facing WebView landing; the code inside is single-use and
+// short-lived, and is never exchanged here.
+func (s *Server) oauthMobileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	query := r.URL.Query()
+	data := struct {
+		Code             string
+		Error            string
+		ErrorDescription string
+	}{
+		Code:             query.Get("code"),
+		Error:            query.Get("oauthError"),
+		ErrorDescription: query.Get("oauthErrorDescription"),
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := oauthMobileTemplate.Execute(w, data); err != nil {
+		log.Printf("Warning: cannot render mobile OAuth page: %v", err)
+	}
+}
+
+// oauthCallbackHandler handles the IdP redirect (GET redirect or POST
+// form_post): it validates state, completes the Immich callback, creates the
+// swipe session, and hands the browser a single-use code.
 func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	fail := func() {
-		http.Redirect(w, r, "/login?oauthError=oauth_failed", http.StatusFound)
-	}
-	code := r.URL.Query().Get("code")
-	state := r.URL.Query().Get("state")
-	if code == "" || state == "" {
-		http.Redirect(w, r, "/login?oauthError=invalid_state", http.StatusFound)
-		return
+	w.Header().Set("Cache-Control", "no-store")
+	redirectStatus := http.StatusFound
+	if r.Method == http.MethodPost {
+		redirectStatus = http.StatusSeeOther
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, s.oauthRedirect(r, "", url.Values{"oauthError": {"invalid_request"}}), redirectStatus)
+		return
+	}
+	// Merge the query string and a form_post body into one set of values;
+	// both are valid ways for an IdP to deliver the response.
+	values := url.Values{}
+	for k, vv := range r.URL.Query() {
+		values[k] = append(values[k], vv...)
+	}
+	for k, vv := range r.PostForm {
+		values[k] = append(values[k], vv...)
+	}
+
+	state := values.Get("state")
+	code := values.Get("code")
+
+	// Peek at (do not consume) the pending entry: a transient exchange
+	// failure must still be retryable until the entry expires.
 	s.oauthMu.Lock()
 	pending, ok := s.oauthPending[state]
-	if ok {
+	if ok && time.Now().After(pending.ExpiresAt) {
 		delete(s.oauthPending, state)
+		ok = false
 	}
 	s.oauthMu.Unlock()
-	if !ok || time.Now().After(pending.ExpiresAt) {
-		http.Redirect(w, r, "/login?oauthError=invalid_state", http.StatusFound)
+
+	redirect := func(params url.Values) {
+		client := ""
+		if ok {
+			client = pending.Client
+		}
+		http.Redirect(w, r, s.oauthRedirect(r, client, params), redirectStatus)
+	}
+
+	// Forward IdP-reported errors verbatim rather than collapsing them.
+	if idpErr := values.Get("error"); idpErr != "" {
+		if ok {
+			s.oauthMu.Lock()
+			delete(s.oauthPending, state)
+			s.oauthMu.Unlock()
+		}
+		redirect(oauthErrorParams(values))
 		return
 	}
 
-	// Forward the IdP's exact query verbatim, anchored to the redirect_uri sent
-	// to Immich at start. Rebuilding only code+state drops params the IdP sends
-	// (e.g. Authelia's RFC 9207 `iss`), which Immich's oauth4webapi rejects as
-	// OAUTH_INVALID_RESPONSE; re-deriving the base from this request's headers
-	// can differ behind a proxy (scheme/host) and break the token exchange.
-	callbackURL := pending.RedirectURI + "?" + r.URL.RawQuery
+	if !ok || state == "" || code == "" {
+		redirect(url.Values{"oauthError": {"invalid_state"}})
+		return
+	}
+
+	// Forward the IdP's exact parameters (query + form body), anchored to the
+	// redirect_uri sent to Immich at start. Rebuilding only code+state drops
+	// params the IdP sends (e.g. Authelia's RFC 9207 `iss`), which Immich's
+	// oauth4webapi rejects as OAUTH_INVALID_RESPONSE; re-deriving the base from
+	// this request's headers can differ behind a proxy and break the exchange.
+	callbackURL := pending.RedirectURI + "?" + values.Encode()
 	respBody, status := s.oauthPostJSON(
 		strings.TrimRight(pending.ServerURL, "/")+"/api/oauth/callback",
 		map[string]string{"url": callbackURL, "state": state, "codeVerifier": pending.CodeVerifier},
@@ -1088,24 +1343,25 @@ func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	)
 	if status == 0 {
 		log.Printf("Immich OAuth callback failed: unreachable")
-		fail()
+		redirect(url.Values{"oauthError": {"oauth_exchange_failed"}})
 		return
 	}
 	if respBody == nil {
 		log.Printf("Immich OAuth callback failed: status=%d", status)
-		fail()
+		redirect(url.Values{"oauthError": {"oauth_exchange_failed"}})
 		return
 	}
 	var loginResult immichLoginResponse
 	if err := json.Unmarshal(respBody, &loginResult); err != nil || loginResult.AccessToken == "" {
-		fail()
+		log.Printf("Immich OAuth callback returned an unusable response: status=%d", status)
+		redirect(url.Values{"oauthError": {"oauth_exchange_failed"}})
 		return
 	}
 
 	valid, displayName, err := s.validateAccessToken(pending.ServerURL, loginResult.AccessToken)
 	if err != nil || !valid {
 		log.Printf("OAuth token validation failed: valid=%v err=%v", valid, err)
-		fail()
+		redirect(url.Values{"oauthError": {"oauth_token_invalid"}})
 		return
 	}
 	userName := displayName
@@ -1123,7 +1379,10 @@ func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	token := s.session.CreateAccessToken(userName, loginResult.AccessToken, pending.ServerURL, loginResult.UserEmail, loginResult.UserID)
 	oneTime := generateToken()
+
+	// Success: consume the pending state and record the single-use code.
 	s.oauthMu.Lock()
+	delete(s.oauthPending, state)
 	now := time.Now()
 	for k, c := range s.oauthCodes {
 		if now.After(c.ExpiresAt) {
@@ -1139,7 +1398,11 @@ func (s *Server) oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	s.oauthMu.Unlock()
 
 	log.Printf("Login: mode=accessToken(oauth) user=%q session=%s…", userName, token[:12])
-	http.Redirect(w, r, "/login?oauthCode="+url.QueryEscape(oneTime), http.StatusFound)
+	codeParams := url.Values{"oauthCode": {oneTime}}
+	if pending.Client == "mobile" {
+		codeParams = url.Values{"code": {oneTime}}
+	}
+	http.Redirect(w, r, s.oauthRedirect(r, pending.Client, codeParams), redirectStatus)
 }
 
 // oauthFinishHandler exchanges a single-use handoff code for the swipe
@@ -1149,6 +1412,7 @@ func (s *Server) oauthFinishHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot read request body"})

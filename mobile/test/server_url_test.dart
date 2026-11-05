@@ -87,7 +87,7 @@ void main() {
     expect(c.read(sessionProvider).session?.serverUrl, 'https://swipe.example.com');
   });
 
-  test('oauthStart posts an empty body without serverUrl', () async {
+  test('oauthStart requests the mobile handoff without sending serverUrl', () async {
     final store = _FakeStore();
     final requests = <RequestOptions>[];
     final dio = _capturingDio(requests, respond: (o) {
@@ -109,7 +109,7 @@ void main() {
     final body = start.data;
     expect(body, isA<Map>());
     expect((body as Map).containsKey('serverUrl'), isFalse);
-    expect(body, isEmpty);
+    expect(body['client'], 'mobile');
   });
 
   test('fetchConfigFor("") performs no request and returns false', () async {
@@ -147,6 +147,10 @@ void main() {
 
     await t.pumpWidget(
         UncontrolledProviderScope(container: container, child: const MaterialApp(home: LoginScreen())));
+    await t.pump();
+    // Let the immediate fresh-install config probe complete (Dio schedules a
+    // zero-duration timer for the intercepted response).
+    await t.pump(const Duration(milliseconds: 500));
     await t.pump();
 
     final field = t.widget<TextField>(find.widgetWithText(TextField, 'Server URL'));
@@ -208,10 +212,13 @@ void main() {
     await t.pumpWidget(
         UncontrolledProviderScope(container: container, child: const MaterialApp(home: LoginScreen())));
     await t.pump();
+    await t.pump(const Duration(milliseconds: 500));
+    await t.pump();
 
-    // Nothing is claimed before the user provides a server URL.
-    expect(find.text('Checking SSO availability…'), findsNothing);
-    expect(find.text('Sign in with MockSSO'), findsNothing);
+    // A fresh install has the hosted default prefilled and probes it
+    // immediately, so the SSO button must already be available.
+    expect(requests.any((r) => r.path.contains('/auth/config')), isTrue);
+    expect(find.text('Sign in with MockSSO'), findsOneWidget);
 
     await t.enterText(find.widgetWithText(TextField, 'Server URL'), 'https://swipe.example.com');
     await t.pump();

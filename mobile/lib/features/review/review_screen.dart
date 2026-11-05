@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_card_swiper/flutter_card_swiper.dart';
 import 'package:video_player/video_player.dart';
 import '../../state/providers.dart';
+import '../settings/settings_screen.dart';
 import '../../models/immich_asset.dart';
 import 'widgets/swipe_card.dart';
 import 'widgets/stats_bar.dart';
@@ -360,6 +361,15 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
               ),
           ]),
           actions: [
+            IconButton(
+              key: const Key('open-settings-button'),
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              ),
+              icon: const Icon(Icons.manage_accounts_rounded, size: 20),
+              tooltip: 'Settings & account',
+              style: IconButton.styleFrom(minimumSize: const Size(48, 48)),
+            ),
             if (showLogout)
               IconButton(
                 onPressed: () => ref.read(sessionProvider.notifier).logout(),

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useEmailSettingsStore } from '@/stores/emailSettings'
 import { useObservabilityStore } from '@/stores/observability'
@@ -12,6 +13,7 @@ const store = useObservabilityStore()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
 const emailStore = useEmailSettingsStore()
+const router = useRouter()
 
 // Local editable copy — only persisted on Save, so invalid input never
 // overwrites the active (persisted) configuration.
@@ -173,6 +175,58 @@ async function save() {
   saved.value = true
   uiStore.toast('Observability settings saved', 'success', 1500)
   setTimeout(() => (saved.value = false), 2000)
+}
+
+// ── Account data: export and deletion ─────────────────────────────────────
+const exporting = ref(false)
+const exportError = ref('')
+
+async function exportAccountData() {
+  exportError.value = ''
+  exporting.value = true
+  const result = await authStore.exportAccount()
+  exporting.value = false
+  if (!result.ok) {
+    exportError.value = result.error
+    return
+  }
+  const blob = new Blob([JSON.stringify(result.data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'immich-swipe-account.json'
+  link.click()
+  URL.revokeObjectURL(url)
+  uiStore.toast('Account data exported', 'success', 1500)
+}
+
+const showDeleteModal = ref(false)
+const deleteConfirm = ref('')
+const deleteError = ref('')
+const deleting = ref(false)
+
+function openDeleteModal() {
+  deleteConfirm.value = ''
+  deleteError.value = ''
+  showDeleteModal.value = true
+}
+
+async function confirmDeleteAccount() {
+  deleteError.value = ''
+  if (deleteConfirm.value.trim() !== authStore.currentUserName) {
+    deleteError.value = `Type “${authStore.currentUserName}” exactly to confirm`
+    return
+  }
+  deleting.value = true
+  const result = await authStore.deleteAccount(deleteConfirm.value.trim())
+  deleting.value = false
+  if (!result.ok) {
+    deleteError.value = result.error
+    return
+  }
+  showDeleteModal.value = false
+  uiStore.toast('Your account has been deleted', 'success', 2000)
+  router.push('/login')
 }
 
 onBeforeUnmount(() => {
@@ -547,6 +601,123 @@ onBeforeUnmount(() => {
       <span v-if="saved" class="text-sm" :class="uiStore.isDarkMode ? 'text-green-400' : 'text-green-600'">
         Saved ✓
       </span>
+    </div>
+
+    <!-- Account data, legal links and deletion -->
+    <section
+      class="rounded-2xl shadow-lg border p-5 mt-6"
+      :class="uiStore.isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'"
+    >
+      <h2 class="font-semibold" :class="uiStore.isDarkMode ? 'text-white' : 'text-gray-900'">
+        Account data
+      </h2>
+      <p class="text-xs mt-0.5 mb-4" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-500'">
+        Download a JSON copy of your app account, or close the account. Photos and the Immich
+        account stay on your Immich server.
+      </p>
+
+      <div class="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          data-testid="account-export-btn"
+          @click="exportAccountData"
+          :disabled="exporting"
+          class="px-4 py-2 rounded-full text-sm font-medium border transition-colors disabled:opacity-40"
+          :class="uiStore.isDarkMode
+            ? 'border-gray-700 text-gray-200 hover:bg-gray-800'
+            : 'border-gray-300 text-gray-700 hover:bg-gray-100'"
+        >
+          {{ exporting ? 'Exporting…' : 'Export my data' }}
+        </button>
+        <button
+          type="button"
+          data-testid="account-delete-btn"
+          @click="openDeleteModal"
+          class="px-4 py-2 rounded-full text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors"
+        >
+          Delete account
+        </button>
+      </div>
+      <p v-if="exportError" class="text-xs text-red-500 mt-2" data-testid="account-export-error">
+        {{ exportError }}
+      </p>
+
+      <div class="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+        <RouterLink to="/privacy" class="underline" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-600'">
+          Privacy policy
+        </RouterLink>
+        <RouterLink to="/terms" class="underline" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-600'">
+          Terms of use
+        </RouterLink>
+        <RouterLink to="/account/delete" class="underline" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-600'">
+          What deletion removes
+        </RouterLink>
+      </div>
+    </section>
+
+    <!-- Delete account confirmation -->
+    <div
+      v-if="showDeleteModal"
+      class="fixed inset-0 z-40 flex items-center justify-center bg-black/60 px-4"
+      @click="showDeleteModal = false"
+    >
+      <div
+        class="w-full max-w-md rounded-2xl shadow-2xl border p-5 text-left"
+        :class="uiStore.isDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'"
+        @click.stop
+      >
+        <h2 class="text-lg font-semibold" :class="uiStore.isDarkMode ? 'text-gray-100' : 'text-gray-900'">
+          Delete your account?
+        </h2>
+        <p class="mt-2 text-sm" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-600'">
+          This erases your app account, email, password hash, stored Immich API key, all sessions
+          and your counters. It cannot be undone.
+        </p>
+        <p class="mt-2 text-sm" :class="uiStore.isDarkMode ? 'text-amber-300' : 'text-amber-700'">
+          Your Immich account and photos are <strong>not</strong> deleted — they live on your Immich
+          server. Revoke the API key in Immich separately.
+        </p>
+        <p class="mt-2 text-xs">
+          <RouterLink to="/account/delete" class="underline">Read what is removed and retained</RouterLink>
+        </p>
+        <label class="block text-sm mt-4 mb-1" :class="uiStore.isDarkMode ? 'text-gray-300' : 'text-gray-700'">
+          Type <strong>{{ authStore.currentUserName }}</strong> to confirm
+        </label>
+        <input
+          v-model="deleteConfirm"
+          data-testid="account-delete-confirm"
+          autocomplete="off"
+          class="w-full px-3 py-2 rounded-lg border text-sm"
+          :class="uiStore.isDarkMode
+            ? 'bg-gray-800 border-gray-700 text-white'
+            : 'bg-gray-50 border-gray-300 text-gray-900'"
+          @keyup.enter="confirmDeleteAccount"
+        />
+        <p v-if="deleteError" class="text-xs text-red-500 mt-2" data-testid="account-delete-error">
+          {{ deleteError }}
+        </p>
+        <div class="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            class="px-4 py-2 rounded-full text-sm font-medium border transition-colors"
+            :class="uiStore.isDarkMode
+              ? 'border-gray-700 text-gray-200 hover:bg-gray-800'
+              : 'border-gray-300 text-gray-700 hover:bg-gray-100'"
+            @click="showDeleteModal = false"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="account-delete-confirm-btn"
+            :disabled="deleting"
+            class="px-4 py-2 rounded-full text-sm font-semibold text-white bg-red-600 hover:bg-red-700 disabled:opacity-40 transition-colors"
+            @click="confirmDeleteAccount"
+          >
+            {{ deleting ? 'Deleting…' : 'Delete account' }}
+          </button>
+        </div>
+      </div>
     </div>
   </main>
 </template>

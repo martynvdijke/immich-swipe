@@ -56,9 +56,12 @@ class AuthRepository {
     }
   }
 
-  Future<Map<String, dynamic>> oauthStart() async {
+  /// Starts the SSO handoff. The `client: mobile` flag makes the backend
+  /// redirect to the standalone `/oauth/mobile` page (which does not consume the
+  /// one-time code) instead of the web app's `/login` SPA route.
+  Future<Map<String, dynamic>> oauthStart({String client = 'mobile'}) async {
     try {
-      final r = await _dio.post('/auth/oauth/start', data: <String, dynamic>{});
+      final r = await _dio.post('/auth/oauth/start', data: <String, dynamic>{'client': client});
       return r.data as Map<String, dynamic>;
     } on DioException catch (e) {
       throw ApiClient.mapError(e);
@@ -69,6 +72,16 @@ class AuthRepository {
     try {
       final r = await _dio.post('/auth/oauth/finish', data: {'code': code});
       return LoginResult.fromJson(r.data as Map<String, dynamic>);
+    } on DioException catch (e) {
+      throw ApiClient.mapError(e);
+    }
+  }
+
+  /// Deletes the app-local account and every swipe session for it. The backend
+  /// requires the caller to type their user name as an explicit confirmation.
+  Future<void> deleteAccount({required String confirm}) async {
+    try {
+      await _dio.delete('/auth/account', data: {'confirm': confirm});
     } on DioException catch (e) {
       throw ApiClient.mapError(e);
     }

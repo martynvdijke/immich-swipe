@@ -18,6 +18,7 @@ const apiKey = ref('')
 const userName = ref('')
 const error = ref('')
 const isSubmitting = ref(false)
+const demoSubmitting = ref(false)
 
 function setMode(mode: LoginMode) {
   loginMode.value = mode
@@ -145,13 +146,30 @@ async function handleSubmit() {
 
   isSubmitting.value = false
 }
+
+/** Fill the form with the shared demo credentials and run the normal login. */
+async function useDemoAccount() {
+  if (isSubmitting.value) return
+  error.value = ''
+  loginMode.value = 'swipe'
+  userName.value = authStore.demoUserName
+  password.value = authStore.demoPassword
+  serverUrl.value = authStore.demoServerUrl || authStore.defaultServerUrl || ''
+  demoSubmitting.value = true
+  try {
+    await handleSubmit()
+  } finally {
+    demoSubmitting.value = false
+  }
+}
 </script>
 
 <template>
-  <div class="min-h-screen flex flex-col items-center justify-center p-6"
+  <div
+    class="flex h-screen flex-col items-center overflow-y-auto p-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))] supports-[height:100dvh]:h-dvh"
     :class="uiStore.isDarkMode ? 'bg-black text-white' : 'bg-white text-black'"
   >
-    <div class="w-full max-w-md">
+    <div class="my-auto w-full max-w-md">
       <!-- Logo/Title -->
       <div class="text-center mb-8">
         <h1 class="text-3xl font-bold mb-2">Immich Swipe</h1>
@@ -325,7 +343,7 @@ async function handleSubmit() {
         </template>
 
         <!-- Error message -->
-        <div v-if="error" class="p-3 rounded-lg bg-red-500/20 text-red-400 text-sm">
+        <div v-if="error" class="p-3 rounded-lg bg-red-500/20 text-red-400 text-sm" role="alert">
           {{ error }}
         </div>
 
@@ -377,6 +395,77 @@ async function handleSubmit() {
         </button>
       </div>
 
+      <!-- Shared demo account (only when the operator enables it) -->
+      <section v-if="authStore.demoEnabled" class="mt-6" aria-labelledby="demo-heading">
+        <div
+          class="rounded-2xl border p-4 sm:p-5"
+          :class="uiStore.isDarkMode
+            ? 'border-indigo-400/25 bg-indigo-400/[0.06]'
+            : 'border-indigo-200 bg-indigo-50/70'"
+        >
+          <div class="flex items-start gap-3">
+            <span
+              class="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
+              :class="uiStore.isDarkMode ? 'bg-indigo-400/15 text-indigo-300' : 'bg-indigo-100 text-indigo-600'"
+              aria-hidden="true"
+            >
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+              </svg>
+            </span>
+            <div class="min-w-0">
+              <h2
+                id="demo-heading"
+                class="text-sm font-semibold"
+                :class="uiStore.isDarkMode ? 'text-white' : 'text-gray-900'"
+              >
+                Shared demo account
+              </h2>
+              <p
+                class="mt-1 text-xs leading-5"
+                :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-600'"
+              >
+                Anyone can use it to try the app.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            :disabled="isSubmitting"
+            class="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border py-2.5 px-4 text-sm font-medium transition-colors disabled:opacity-50"
+            :class="uiStore.isDarkMode
+              ? 'border-indigo-400/30 bg-indigo-400/10 text-indigo-200 hover:bg-indigo-400/20'
+              : 'border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50'"
+            @click="useDemoAccount"
+          >
+            <svg
+              v-if="demoSubmitting"
+              class="h-4 w-4 animate-spin"
+              fill="none"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>{{ demoSubmitting ? 'Signing in…' : 'Use the demo account' }}</span>
+          </button>
+
+          <p
+            v-if="authStore.demoUserName"
+            class="mt-2.5 text-center text-[11px]"
+            :class="uiStore.isDarkMode ? 'text-gray-500' : 'text-gray-500'"
+          >
+            You will be signed in as
+            <code
+              class="rounded px-1 py-0.5 font-mono"
+              :class="uiStore.isDarkMode ? 'bg-white/10 text-gray-300' : 'bg-black/5 text-gray-700'"
+            >{{ authStore.demoUserName }}</code>
+          </p>
+        </div>
+      </section>
+
       <!-- Theme toggle -->
       <div class="mt-8 flex justify-center">
         <button
@@ -391,6 +480,19 @@ async function handleSubmit() {
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
           </svg>
         </button>
+      </div>
+
+      <!-- Public legal pages: readable without an account. -->
+      <div class="mt-6 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs">
+        <a href="/privacy" class="underline hover:no-underline" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-600'">
+          Privacy
+        </a>
+        <a href="/terms" class="underline hover:no-underline" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-600'">
+          Terms
+        </a>
+        <a href="/account/delete" class="underline hover:no-underline" :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-600'">
+          Delete account
+        </a>
       </div>
     </div>
   </div>

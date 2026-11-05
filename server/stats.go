@@ -107,6 +107,31 @@ func (s *StatsStore) Snapshot() (kept, deleted int, users []StatsEntry, updatedA
 	return kept, deleted, users, s.updatedAt
 }
 
+// Remove deletes the counter entry for one (serverURL, userName) identity so
+// account deletion leaves no per-user activity behind.
+func (s *StatsStore) Remove(serverURL, userName string) {
+	s.mu.Lock()
+	delete(s.entries, statsKey(serverURL, userName))
+	s.updatedAt = time.Now()
+	s.mu.Unlock()
+	if s.filePath != "" {
+		if err := s.SaveToFile(s.filePath); err != nil {
+			log.Printf("Warning: failed to persist stats to %s: %v", s.filePath, err)
+		}
+	}
+}
+
+// Get returns a copy of one identity's counters, if present.
+func (s *StatsStore) Get(serverURL, userName string) (StatsEntry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry, ok := s.entries[statsKey(serverURL, userName)]
+	if !ok {
+		return StatsEntry{}, false
+	}
+	return *entry, true
+}
+
 // Reset clears all counters and restores the last-change timestamp to now.
 func (s *StatsStore) Reset() {
 	s.mu.Lock()

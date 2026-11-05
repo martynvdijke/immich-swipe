@@ -2,6 +2,7 @@ import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import { flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsView from '@/views/SettingsView.vue'
 import { useObservabilityStore } from '@/stores/observability'
@@ -33,9 +34,21 @@ vi.mock('@/composables/useOtel', () => ({
 
 let pinia: Pinia
 
+const Blank = { template: '<div />' }
+
 function mountView() {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/settings', component: Blank },
+      { path: '/login', component: Blank },
+      { path: '/privacy', component: Blank },
+      { path: '/terms', component: Blank },
+      { path: '/account/delete', component: Blank },
+    ],
+  })
   const wrapper = mount(SettingsView, {
-    global: { plugins: [pinia] },
+    global: { plugins: [pinia, router] },
   })
   return wrapper
 }

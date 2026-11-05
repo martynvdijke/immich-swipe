@@ -13,5 +13,8 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: './vitest.setup.ts',
+    // Nested worktrees under .slim/ contain copies of the same specs; running
+    // them double-executes tests and mounts components without the app router.
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.slim/**'],
   },
 })

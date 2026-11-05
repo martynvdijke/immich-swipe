@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useUiStore } from '@/stores/ui'
 import { useAuthStore } from '@/stores/auth'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { usePreferencesStore } from '@/stores/preferences'
 import { useReviewedStore } from '@/stores/reviewed'
 import { computed, ref } from 'vue'
@@ -183,6 +183,16 @@ function confirmResetReviewed() {
             </svg>
             Add person
           </button>
+
+          <hr class="my-1 border-gray-200 dark:border-gray-800" />
+          <div
+            class="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 text-xs"
+            :class="uiStore.isDarkMode ? 'text-gray-400' : 'text-gray-500'"
+          >
+            <RouterLink to="/privacy" class="underline hover:no-underline">Privacy</RouterLink>
+            <RouterLink to="/terms" class="underline hover:no-underline">Terms</RouterLink>
+            <RouterLink to="/account/delete" class="underline hover:no-underline">Delete account</RouterLink>
+          </div>
         </div>
       </div>
       <!-- Theme toggle -->

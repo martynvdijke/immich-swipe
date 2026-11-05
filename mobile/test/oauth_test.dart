@@ -66,6 +66,44 @@ void main() {
     });
   });
 
+  group('mobile OAuth handoff', () {
+    test('extracts the code from /oauth/mobile only', () {
+      expect(oauthMobileCodeFromUrl('https://swipe.example.com/oauth/mobile?code=abc123'), 'abc123');
+      expect(oauthMobileCodeFromUrl('https://swipe.example.com/login?oauthCode=abc123'), isNull);
+      expect(oauthMobileCodeFromUrl('https://swipe.example.com/swipe/oauth/mobile?code=prefixed'), 'prefixed');
+      expect(oauthMobileCodeFromUrl('https://swipe.example.com/oauth/mobile?code='), isNull);
+      expect(oauthMobileCodeFromUrl('https://swipe.example.com/oauth/mobile'), isNull);
+    });
+
+    test('is host-scoped so a redirect to another origin cannot steal the code', () {
+      const expected = 'https://swipe.example.com';
+      expect(oauthMobileCodeFromUrl('https://swipe.example.com/oauth/mobile?code=ok', expectedOrigin: expected), 'ok');
+      expect(oauthMobileCodeFromUrl('https://evil.example/oauth/mobile?code=stolen', expectedOrigin: expected), isNull);
+      expect(oauthMobileCodeFromUrl('http://swipe.example.com/oauth/mobile?code=wrong-scheme', expectedOrigin: expected), isNull);
+      expect(oauthMobileCodeFromUrl('https://swipe.example.com:8443/oauth/mobile?code=wrong-port', expectedOrigin: expected), isNull);
+    });
+
+    test('reads backend/IdP errors and descriptions from the mobile page', () {
+      const url = 'https://swipe.example.com/oauth/mobile?oauthError=access_denied&oauthErrorDescription=User+denied';
+      expect(oauthMobileErrorFromUrl(url, expectedOrigin: 'https://swipe.example.com'), 'access_denied');
+      expect(oauthMobileErrorDescriptionFromUrl(url, expectedOrigin: 'https://swipe.example.com'), 'User denied');
+      expect(oauthMobileErrorFromUrl('https://evil.example/oauth/mobile?oauthError=x', expectedOrigin: 'https://swipe.example.com'), isNull);
+    });
+
+    test('handles the form_post 303 redirect URL (query params after callback)', () {
+      // The IdP POSTs the response to /api/auth/oauth/callback; the 303 redirect
+      // lands on the static mobile page with the code in the query string.
+      const location = 'https://swipe.example.com/oauth/mobile?state=s1&code=fresh-code';
+      expect(oauthCodeFromUrl(location, expectedOrigin: 'https://swipe.example.com'), 'fresh-code');
+      expect(oauthMobileCodeFromUrl(location, expectedOrigin: 'https://swipe.example.com'), 'fresh-code');
+    });
+
+    test('legacy /login?oauthCode is still supported but host-scoped', () {
+      expect(oauthCodeFromUrl('https://swipe.example.com/login?oauthCode=legacy', expectedOrigin: 'https://swipe.example.com'), 'legacy');
+      expect(oauthCodeFromUrl('https://evil.example/login?oauthCode=legacy', expectedOrigin: 'https://swipe.example.com'), isNull);
+    });
+  });
+
   group('formatDuration', () {
     test('renders the Immich H:MM:SS.ffffff duration like a player', () {
       expect(formatDuration('0:00:12.000000'), '0:12');

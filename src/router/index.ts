@@ -33,6 +33,26 @@ const router = createRouter({
       component: () => import('@/views/ResetPasswordView.vue'),
     },
     {
+      // Public legal pages: reachable without a session, including on a hard
+      // refresh, because store review and data-protection law require it.
+      path: '/privacy',
+      name: 'privacy',
+      component: () => import('@/views/LegalPrivacyView.vue'),
+      meta: { public: true },
+    },
+    {
+      path: '/terms',
+      name: 'terms',
+      component: () => import('@/views/LegalTermsView.vue'),
+      meta: { public: true },
+    },
+    {
+      path: '/account/delete',
+      name: 'account-delete',
+      component: () => import('@/views/LegalDeleteView.vue'),
+      meta: { public: true },
+    },
+    {
       // User selection is part of the login page now. Logged-out visitors are
       // sent to /login by the guard; logged-in visitors reach the home view.
       path: '/select-user',
@@ -48,6 +68,13 @@ router.afterEach((to) => {
 
 // Navigation guard
 router.beforeEach(async (to, _from, next) => {
+  // Legal pages must be readable before sign-up and after sign-out. They do not
+  // need the auth store, the backend config, or a session.
+  if (to.meta.public === true) {
+    next()
+    return
+  }
+
   const authStore = useAuthStore()
 
   // Restore a persisted session after reload when none is active yet.

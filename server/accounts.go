@@ -327,6 +327,24 @@ func (s *AccountStore) GetByEmail(serverURL, email string) (Account, bool) {
 	return Account{}, false
 }
 
+// Delete removes the account row for (serverURL, userName), including its
+// password hash, email and Immich API key. It reports whether an in-memory
+// account existed. Database failures are logged and ignored, matching the
+// store's degrade-to-memory contract.
+func (s *AccountStore) Delete(serverURL, userName string) bool {
+	key := accountKey(serverURL, userName)
+	s.mu.Lock()
+	_, existed := s.mem[key]
+	delete(s.mem, key)
+	s.mu.Unlock()
+	if s.db != nil {
+		if _, err := s.db.Exec(`DELETE FROM accounts WHERE server_url = ? AND user_name = ?`, serverURL, userName); err != nil {
+			log.Printf("Warning: cannot delete account %q: %v", userName, err)
+		}
+	}
+	return existed
+}
+
 // All returns a copy of all accounts (for email lookup fallback).
 func (s *AccountStore) All() []Account {
 	s.mu.RLock()

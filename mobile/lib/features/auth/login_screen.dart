@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../state/providers.dart';
 import '../../core/api_client.dart';
 import '../../core/app_config.dart';
+import '../../models/session.dart';
 import 'oauth_webview_screen.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -47,6 +48,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       }
     });
     _loadSavedServerUrl();
+    // Fresh installs already have the hosted default in the field. Probe it
+    // immediately instead of waiting for the user to type or blur, otherwise
+    // the SSO button/demo account would not appear on first launch.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _checkOauthConfig();
+    });
   }
 
   /// Loads the last successful backend URL. Storage wins over the hosted default
@@ -179,6 +186,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         builder: (_) => OAuthWebViewScreen(
           startUrl: authorizeUrl,
           buttonText: ref.read(sessionProvider).oauthConfig?.oauthButtonText ?? 'SSO',
+          expectedOrigin: serverUrl,
+          onRetry: () async {
+            final fresh = await ref.read(sessionProvider.notifier).oauthStart(serverUrl: serverUrl);
+            final freshUrl = fresh['url'] as String? ?? '';
+            if (freshUrl.isEmpty) {
+              throw AppException('oauth_not_enabled', 'Server returned no authorize URL');
+            }
+            return freshUrl;
+          },
         ),
       ));
     } on AppException catch (e) {
@@ -209,16 +225,48 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     try {
       await ref.read(sessionProvider.notifier).oauthFinish(code, serverUrl: _serverCtrl.text.trim());
     } on AppException catch (e) {
-      setState(() => _error = '${e.code}: ${e.message}');
+      if (!mounted) return;
+      setState(() {
+        if (e.code == 'invalid_code') {
+          // Surface the state explicitly instead of the opaque backend code: the
+          // one-time code is single-use and expires after five minutes.
+          _oauthCodeCtrl.clear();
+          _error = 'This SSO code has expired or was already used. Start SSO sign-in again to get a fresh code.';
+        } else {
+          _error = '${e.code}: ${e.message}';
+        }
+      });
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
+  /// Signs in with the public demo/review account from `GET /auth/config`.
+  /// The demo server URL is the Immich library behind this backend, not the
+  /// swipe API base, so the URL field is deliberately left untouched.
+  Future<void> _useDemo(AuthConfig config) async {
+    if (_busy) return;
+    setState(() {
+      _createMode = false;
+      _userCtrl.text = config.demoUserName;
+      _passCtrl.text = config.demoPassword;
+      _error = null;
+    });
+    await _submit();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final oauthEnabled = _ssoChecked && (ref.watch(sessionProvider).oauthConfig?.oauthEnabled ?? false);
-    final oauthText = ref.watch(sessionProvider).oauthConfig?.oauthButtonText ?? 'SSO';
+    final sessionState = ref.watch(sessionProvider);
+    final demoConfig = sessionState.oauthConfig;
+    final demoEnabled = _ssoChecked &&
+        demoConfig != null &&
+        demoConfig.demoEnabled &&
+        demoConfig.demoUserName.isNotEmpty &&
+        demoConfig.demoPassword.isNotEmpty;
+    final oauthEnabled = _ssoChecked && (sessionState.oauthConfig?.oauthEnabled ?? false);
+    final oauthText = sessionState.oauthConfig?.oauthButtonText ?? 'SSO';
+    final configError = sessionState.configError;
     final scheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -321,6 +369,53 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ]),
               ),
               const SizedBox(height: 20),
+              if (demoEnabled) ...[
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer.withOpacity(isDark ? 0.3 : 1),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: scheme.outlineVariant.withOpacity(0.35)),
+                  ),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Icon(Icons.science_rounded, size: 20, color: scheme.onPrimaryContainer),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text('Demo account available',
+                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                  color: scheme.onPrimaryContainer,
+                                )),
+                      ),
+                    ]),
+                    const SizedBox(height: 6),
+                    Text(
+                        'Try the app with ${demoConfig.demoUserName}. This review-only account is published by the server.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onPrimaryContainer)),
+                    if (demoConfig.demoServerUrl.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text('Demo library: ${demoConfig.demoServerUrl}',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: scheme.onPrimaryContainer.withOpacity(0.8), fontSize: 11),
+                          overflow: TextOverflow.ellipsis),
+                    ],
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 44,
+                      child: FilledButton.tonal(
+                        key: const Key('demo-login-button'),
+                        onPressed: _busy ? null : () => _useDemo(demoConfig),
+                        child: const Text('Use demo account'),
+                      ),
+                    ),
+                  ]),
+                ),
+                const SizedBox(height: 16),
+              ],
               Text('Use the default instance below, or enter another self-hosted Immich server.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 12)),
               const SizedBox(height: 8),
@@ -413,16 +508,32 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     'Opens the provider sign-in page in the app and finishes the handoff automatically. '
                     'If your provider blocks the in-app browser, copy the SSO URL from there and paste the code above.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 11)),
-              ] else if (_ssoChecked)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: Text('SSO disabled on this server (GET /api/auth/config oauthEnabled=false).',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 12)),
-                )
-              else if (_probing)
+              ] else if (_probing)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
                   child: Text('Checking SSO availability…',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 12)),
+                )
+              else if (configError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Icon(Icons.cloud_off_rounded, size: 16, color: scheme.error),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('Could not load SSO configuration from this server. Check the URL and try again.',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.error, fontSize: 12)),
+                    ),
+                    TextButton(
+                      onPressed: _busy ? null : _checkOauthConfig,
+                      child: const Text('Retry'),
+                    ),
+                  ]),
+                )
+              else if (_ssoChecked)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text('SSO disabled on this server (GET /api/auth/config oauthEnabled=false).',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant, fontSize: 12)),
                 ),
             ]),

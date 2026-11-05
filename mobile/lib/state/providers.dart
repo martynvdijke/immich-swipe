@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/legacy.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:dio/dio.dart';
+
 import '../core/api_client.dart';
 import '../core/secure_store.dart';
 import '../data/auth_repository.dart';
@@ -19,19 +20,56 @@ final secureStoreProvider = Provider<SecureStore>((ref) => SecureStore());
 /// auth flows can be exercised without real sockets.
 typedef AuthDioFactory = Dio Function(String serverUrl, String? token);
 final authDioFactoryProvider = Provider<AuthDioFactory>(
-    (ref) => (serverUrl, token) => ApiClient(serverUrl: serverUrl, token: token).dio);
+  (ref) =>
+      (serverUrl, token) => ApiClient(serverUrl: serverUrl, token: token).dio,
+);
 
 class SessionState {
-  SessionState({this.session, this.oauthConfig, this.loading = false, this.error, this.needsApiKey = false});
+  SessionState({
+    this.session,
+    this.oauthConfig,
+    this.loading = false,
+    this.error,
+    this.needsApiKey = false,
+    this.configError,
+    this.configChecked = false,
+  });
+
   final SessionInfo? session;
   final AuthConfig? oauthConfig;
   final bool loading;
   final String? error;
   final bool needsApiKey;
+
+  /// The last `GET /auth/config` failure (network, TLS, HTTP error). Distinct
+  /// from [error] (login/API failures) so the login screen can show "could not
+  /// check SSO" instead of falsely claiming SSO is disabled.
+  final String? configError;
+
+  /// True after at least one successful config probe for the current URL.
+  final bool configChecked;
+
   bool get isLoggedIn => session != null;
   static const _unset = Object();
-  SessionState copyWith({SessionInfo? session, AuthConfig? oauthConfig, bool? loading, Object? error = _unset, bool? needsApiKey}) =>
-      SessionState(session: session ?? this.session, oauthConfig: oauthConfig ?? this.oauthConfig, loading: loading ?? this.loading, error: error == _unset ? this.error : error as String?, needsApiKey: needsApiKey ?? this.needsApiKey);
+  SessionState copyWith({
+    SessionInfo? session,
+    AuthConfig? oauthConfig,
+    bool? loading,
+    Object? error = _unset,
+    bool? needsApiKey,
+    Object? configError = _unset,
+    bool? configChecked,
+  }) => SessionState(
+    session: session ?? this.session,
+    oauthConfig: oauthConfig ?? this.oauthConfig,
+    loading: loading ?? this.loading,
+    error: error == _unset ? this.error : error as String?,
+    needsApiKey: needsApiKey ?? this.needsApiKey,
+    configError: configError == _unset
+        ? this.configError
+        : configError as String?,
+    configChecked: configChecked ?? this.configChecked,
+  );
 }
 
 class SessionNotifier extends StateNotifier<SessionState> {
@@ -45,14 +83,23 @@ class SessionNotifier extends StateNotifier<SessionState> {
 
   Future<void> _restore() async {
     final s = await ref.read(secureStoreProvider).readSession();
+    if (!mounted) return;
     final url = s['serverUrl'];
     final token = s['token'];
     final user = s['userName'];
     final mode = s['mode'];
     if (url != null && token != null && user != null) {
       state = SessionState(
-          session: SessionInfo(serverUrl: url, token: token, userName: user, mode: mode ?? 'apiKey'),
-          oauthConfig: state.oauthConfig);
+        session: SessionInfo(
+          serverUrl: url,
+          token: token,
+          userName: user,
+          mode: mode ?? 'apiKey',
+        ),
+        oauthConfig: state.oauthConfig,
+        configError: state.configError,
+        configChecked: state.configChecked,
+      );
       await fetchConfig();
     }
     // No restored session: leave oauthConfig null. Never probe a default/loopback
@@ -74,67 +121,178 @@ class SessionNotifier extends StateNotifier<SessionState> {
       final dio = _dioFor(url, state.session?.token);
       final repo = AuthRepository(dio);
       final cfg = await repo.getConfig();
-      state = SessionState(session: state.session, oauthConfig: cfg, loading: false, needsApiKey: state.needsApiKey, error: state.error);
+      if (!mounted) return false;
+      state = SessionState(
+        session: state.session,
+        oauthConfig: cfg,
+        loading: false,
+        needsApiKey: state.needsApiKey,
+        error: state.error,
+        configChecked: true,
+      );
       return true;
-    } catch (_) {
-      // ignore config errors
+    } on AppException catch (e) {
+      if (!mounted) return false;
+      state = SessionState(
+        session: state.session,
+        loading: false,
+        needsApiKey: state.needsApiKey,
+        error: state.error,
+        configError: e.message.isEmpty ? e.code : e.message,
+        configChecked: true,
+      );
+      return false;
+    } catch (e) {
+      if (!mounted) return false;
+      state = SessionState(
+        session: state.session,
+        loading: false,
+        needsApiKey: state.needsApiKey,
+        error: state.error,
+        configError: e.toString(),
+        configChecked: true,
+      );
       return false;
     }
+  }
+
+  /// Clears per-user in-memory state so another account never sees the previous
+  /// user's deck or swipe counters.
+  void _resetUserScopedState() {
+    ref.read(statsProvider.notifier).reset();
+    ref.read(reviewProvider.notifier).reset();
   }
 
   Future<void> handleAuthError(AppException e) async {
     if (e.statusCode == 401 || e.code == 'unauthorized') {
       await ref.read(secureStoreProvider).clearSession();
+      _resetUserScopedState();
       state = SessionState(oauthConfig: state.oauthConfig);
     } else if (e.statusCode == 428 || e.code == 'api_key_required') {
-      state = SessionState(session: state.session, oauthConfig: state.oauthConfig, needsApiKey: true, error: 'api_key_required');
+      state = SessionState(
+        session: state.session,
+        oauthConfig: state.oauthConfig,
+        needsApiKey: true,
+        error: 'api_key_required',
+      );
     }
   }
 
   Future<void> clearSessionLocal() async {
     await ref.read(secureStoreProvider).clearSession();
+    _resetUserScopedState();
     state = SessionState(oauthConfig: state.oauthConfig);
   }
 
   /// Drops the cached OAuth config (e.g. the user edited the server URL).
   void clearOauthConfig() {
-    state = SessionState(session: state.session, needsApiKey: state.needsApiKey, error: state.error);
+    state = SessionState(
+      session: state.session,
+      needsApiKey: state.needsApiKey,
+      error: state.error,
+    );
   }
 
-  Future<void> login({required String serverUrl, required String userName, required String password}) async {
-    state = SessionState(session: state.session, oauthConfig: state.oauthConfig, loading: true);
+  Future<void> login({
+    required String serverUrl,
+    required String userName,
+    required String password,
+  }) async {
+    state = SessionState(
+      session: state.session,
+      oauthConfig: state.oauthConfig,
+      loading: true,
+    );
     try {
       final dio = _dioFor(serverUrl, null);
       final repo = AuthRepository(dio);
       final r = await repo.login(userName: userName, password: password);
       // The typed URL is the immich-swipe backend base. `r.serverUrl` is the
       // Immich server resolved by the backend and must never become the API base.
-      final sess = SessionInfo(serverUrl: serverUrl, token: r.token, userName: r.userName, mode: r.mode);
-      await ref.read(secureStoreProvider).saveSession(serverUrl: sess.serverUrl, token: sess.token, userName: sess.userName, mode: sess.mode);
+      final sess = SessionInfo(
+        serverUrl: serverUrl,
+        token: r.token,
+        userName: r.userName,
+        mode: r.mode,
+      );
+      await ref
+          .read(secureStoreProvider)
+          .saveSession(
+            serverUrl: sess.serverUrl,
+            token: sess.token,
+            userName: sess.userName,
+            mode: sess.mode,
+          );
       if (!r.hasApiKey) {
-        state = SessionState(session: sess, oauthConfig: state.oauthConfig, needsApiKey: true, error: 'api_key_required');
+        state = SessionState(
+          session: sess,
+          oauthConfig: state.oauthConfig,
+          needsApiKey: true,
+          error: 'api_key_required',
+        );
       } else {
         state = SessionState(session: sess, oauthConfig: state.oauthConfig);
       }
     } on AppException catch (e) {
-      state = SessionState(session: state.session, oauthConfig: state.oauthConfig, error: '${e.code}:${e.message}', needsApiKey: e.code == 'api_key_required' || e.statusCode == 428);
+      state = SessionState(
+        session: state.session,
+        oauthConfig: state.oauthConfig,
+        error: '${e.code}:${e.message}',
+        needsApiKey: e.code == 'api_key_required' || e.statusCode == 428,
+      );
       rethrow;
     } finally {
-      if (state.loading) state = SessionState(session: state.session, oauthConfig: state.oauthConfig, error: state.error, needsApiKey: state.needsApiKey);
+      if (state.loading) {
+        state = SessionState(
+          session: state.session,
+          oauthConfig: state.oauthConfig,
+          error: state.error,
+          needsApiKey: state.needsApiKey,
+        );
+      }
     }
   }
 
-  Future<void> createAccount({required String serverUrl, required String userName, required String password, String? apiKey}) async {
-    state = SessionState(session: state.session, oauthConfig: state.oauthConfig, loading: true);
+  Future<void> createAccount({
+    required String serverUrl,
+    required String userName,
+    required String password,
+    String? apiKey,
+  }) async {
+    state = SessionState(
+      session: state.session,
+      oauthConfig: state.oauthConfig,
+      loading: true,
+    );
     try {
       final dio = _dioFor(serverUrl, null);
       final repo = AuthRepository(dio);
-      final r = await repo.createAccount(userName: userName, password: password, apiKey: apiKey);
-      final sess = SessionInfo(serverUrl: serverUrl, token: r.token, userName: r.userName, mode: r.mode);
-      await ref.read(secureStoreProvider).saveSession(serverUrl: sess.serverUrl, token: sess.token, userName: sess.userName, mode: sess.mode);
+      final r = await repo.createAccount(
+        userName: userName,
+        password: password,
+        apiKey: apiKey,
+      );
+      final sess = SessionInfo(
+        serverUrl: serverUrl,
+        token: r.token,
+        userName: r.userName,
+        mode: r.mode,
+      );
+      await ref
+          .read(secureStoreProvider)
+          .saveSession(
+            serverUrl: sess.serverUrl,
+            token: sess.token,
+            userName: sess.userName,
+            mode: sess.mode,
+          );
       state = SessionState(session: sess, oauthConfig: state.oauthConfig);
     } on AppException catch (e) {
-      state = SessionState(session: state.session, oauthConfig: state.oauthConfig, error: '${e.code}:${e.message}');
+      state = SessionState(
+        session: state.session,
+        oauthConfig: state.oauthConfig,
+        error: '${e.code}:${e.message}',
+      );
       rethrow;
     }
   }
@@ -144,12 +302,18 @@ class SessionNotifier extends StateNotifier<SessionState> {
     if (s == null) throw Exception('Not logged in');
     final repo = AuthRepository(_dioFor(s.serverUrl, s.token));
     await repo.setApiKey(apiKey);
-    state = SessionState(session: s, oauthConfig: state.oauthConfig, needsApiKey: false);
+    state = SessionState(
+      session: s,
+      oauthConfig: state.oauthConfig,
+      needsApiKey: false,
+    );
   }
 
   Future<Map<String, dynamic>> oauthStart({required String serverUrl}) async {
     final s = state.session;
-    final url = serverUrl.trim().isNotEmpty ? serverUrl.trim() : (s?.serverUrl ?? '');
+    final url = serverUrl.trim().isNotEmpty
+        ? serverUrl.trim()
+        : (s?.serverUrl ?? '');
     if (url.isEmpty) {
       throw AppException('server_url_required', 'Enter your server URL first');
     }
@@ -158,16 +322,63 @@ class SessionNotifier extends StateNotifier<SessionState> {
   }
 
   Future<void> oauthFinish(String code, {required String serverUrl}) async {
-    final url = serverUrl.trim().isNotEmpty ? serverUrl.trim() : (state.session?.serverUrl ?? '');
+    final url = serverUrl.trim().isNotEmpty
+        ? serverUrl.trim()
+        : (state.session?.serverUrl ?? '');
     if (url.isEmpty) {
       throw AppException('server_url_required', 'Enter your server URL first');
     }
     final dio = _dioFor(url, null);
     final r = await AuthRepository(dio).oauthFinish(code);
     // Persist the swipe backend URL, never the Immich server URL in the response.
-    final sess = SessionInfo(serverUrl: url, token: r.token, userName: r.userName, mode: r.mode);
-    await ref.read(secureStoreProvider).saveSession(serverUrl: sess.serverUrl, token: sess.token, userName: sess.userName, mode: sess.mode);
+    final sess = SessionInfo(
+      serverUrl: url,
+      token: r.token,
+      userName: r.userName,
+      mode: r.mode,
+    );
+    await ref
+        .read(secureStoreProvider)
+        .saveSession(
+          serverUrl: sess.serverUrl,
+          token: sess.token,
+          userName: sess.userName,
+          mode: sess.mode,
+        );
     state = SessionState(session: sess, oauthConfig: state.oauthConfig);
+  }
+
+  /// Erases the app-local account and all swipe sessions for the signed-in
+  /// user. [confirm] must exactly match the current user name (the backend
+  /// enforces this too). On success the local session is removed immediately so
+  /// the app returns to the login screen.
+  Future<void> deleteAccount({required String confirm}) async {
+    final s = state.session;
+    if (s == null) {
+      throw AppException('unauthorized', 'Not signed in', statusCode: 401);
+    }
+    try {
+      await AuthRepository(_dioFor(s.serverUrl, s.token))
+          .deleteAccount(confirm: confirm);
+    } on AppException catch (e) {
+      if (e.statusCode == 401 || e.code == 'unauthorized') {
+        await ref.read(secureStoreProvider).clearSession();
+        _resetUserScopedState();
+        state = SessionState(oauthConfig: state.oauthConfig);
+      }
+      rethrow;
+    }
+    // Erase on-device personal data too: the persisted reviewed-photo IDs, the
+    // in-memory deck, and the counters. The backend has already deleted its copy,
+    // so a local storage failure must not leave the app looking signed in.
+    try {
+      await ref
+          .read(secureStoreProvider)
+          .clearReviewed(s.serverUrl, s.userName);
+    } catch (_) {}
+    await ref.read(secureStoreProvider).clearSession();
+    _resetUserScopedState();
+    state = SessionState(oauthConfig: state.oauthConfig);
   }
 
   Future<void> logout() async {
@@ -178,11 +389,14 @@ class SessionNotifier extends StateNotifier<SessionState> {
       } catch (_) {}
     }
     await ref.read(secureStoreProvider).clearSession();
+    _resetUserScopedState();
     state = SessionState(oauthConfig: state.oauthConfig);
   }
 }
 
-final sessionProvider = StateNotifierProvider<SessionNotifier, SessionState>((ref) => SessionNotifier(ref));
+final sessionProvider = StateNotifierProvider<SessionNotifier, SessionState>(
+  (ref) => SessionNotifier(ref),
+);
 
 // Dio bound to current session (or unauthenticated fallback)
 final dioProvider = Provider<Dio>((ref) {
@@ -191,9 +405,15 @@ final dioProvider = Provider<Dio>((ref) {
   return ApiClient(serverUrl: url, token: sess?.token).dio;
 });
 
-final authRepositoryProvider = Provider<AuthRepository>((ref) => AuthRepository(ref.watch(dioProvider)));
-final assetRepositoryProvider = Provider<AssetRepository>((ref) => AssetRepository(ref.watch(dioProvider)));
-final albumRepositoryProvider = Provider<AlbumRepository>((ref) => AlbumRepository(ref.watch(dioProvider)));
+final authRepositoryProvider = Provider<AuthRepository>(
+  (ref) => AuthRepository(ref.watch(dioProvider)),
+);
+final assetRepositoryProvider = Provider<AssetRepository>(
+  (ref) => AssetRepository(ref.watch(dioProvider)),
+);
+final albumRepositoryProvider = Provider<AlbumRepository>(
+  (ref) => AlbumRepository(ref.watch(dioProvider)),
+);
 
 // ------------------------------------------------------------------
 // Settings
@@ -201,7 +421,8 @@ final albumRepositoryProvider = Provider<AlbumRepository>((ref) => AlbumReposito
 class SettingsState {
   SettingsState({this.skipVideos = false});
   final bool skipVideos;
-  SettingsState copyWith({bool? skipVideos}) => SettingsState(skipVideos: skipVideos ?? this.skipVideos);
+  SettingsState copyWith({bool? skipVideos}) =>
+      SettingsState(skipVideos: skipVideos ?? this.skipVideos);
 }
 
 class SettingsNotifier extends StateNotifier<SettingsState> {
@@ -224,7 +445,9 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   }
 }
 
-final settingsProvider = StateNotifierProvider<SettingsNotifier, SettingsState>((ref) => SettingsNotifier(ref));
+final settingsProvider = StateNotifierProvider<SettingsNotifier, SettingsState>(
+  (ref) => SettingsNotifier(ref),
+);
 
 // ------------------------------------------------------------------
 // Stats
@@ -234,19 +457,32 @@ class StatsState {
   final int kept;
   final int trashed;
   final int freedBytes;
-  StatsState copyWith({int? kept, int? trashed, int? freedBytes}) => StatsState(kept: kept ?? this.kept, trashed: trashed ?? this.trashed, freedBytes: freedBytes ?? this.freedBytes);
+  StatsState copyWith({int? kept, int? trashed, int? freedBytes}) => StatsState(
+    kept: kept ?? this.kept,
+    trashed: trashed ?? this.trashed,
+    freedBytes: freedBytes ?? this.freedBytes,
+  );
 }
 
 class StatsNotifier extends StateNotifier<StatsState> {
   StatsNotifier() : super(StatsState());
   void incKept() => state = state.copyWith(kept: state.kept + 1);
-  void incTrashed({int bytes = 0}) => state = state.copyWith(trashed: state.trashed + 1, freedBytes: state.freedBytes + bytes);
-  void decKept() => state = state.copyWith(kept: (state.kept - 1).clamp(0, 1 << 30));
-  void decTrashed({int bytes = 0}) => state = state.copyWith(trashed: (state.trashed - 1).clamp(0, 1 << 30), freedBytes: (state.freedBytes - bytes).clamp(0, 1 << 60));
+  void incTrashed({int bytes = 0}) => state = state.copyWith(
+    trashed: state.trashed + 1,
+    freedBytes: state.freedBytes + bytes,
+  );
+  void decKept() =>
+      state = state.copyWith(kept: (state.kept - 1).clamp(0, 1 << 30));
+  void decTrashed({int bytes = 0}) => state = state.copyWith(
+    trashed: (state.trashed - 1).clamp(0, 1 << 30),
+    freedBytes: (state.freedBytes - bytes).clamp(0, 1 << 60),
+  );
   void reset() => state = StatsState();
 }
 
-final statsProvider = StateNotifierProvider<StatsNotifier, StatsState>((ref) => StatsNotifier());
+final statsProvider = StateNotifierProvider<StatsNotifier, StatsState>(
+  (ref) => StatsNotifier(),
+);
 
 // ------------------------------------------------------------------
 // Quick albums
@@ -263,14 +499,25 @@ final quickAlbumsProvider = FutureProvider<List<ImmichAlbum>>((ref) async {
 enum ReviewActionType { keep, trash }
 
 class ReviewHistoryEntry {
-  ReviewHistoryEntry({required this.asset, required this.type, this.freedBytes = 0});
+  ReviewHistoryEntry({
+    required this.asset,
+    required this.type,
+    this.freedBytes = 0,
+  });
   final ImmichAsset asset;
   final ReviewActionType type;
   final int freedBytes;
 }
 
 class ReviewState {
-  ReviewState({this.assets = const [], this.loading = false, this.error, this.history = const [], this.reviewedIds = const {}, this.noCandidates = false});
+  ReviewState({
+    this.assets = const [],
+    this.loading = false,
+    this.error,
+    this.history = const [],
+    this.reviewedIds = const {},
+    this.noCandidates = false,
+  });
   final List<ImmichAsset> assets;
   final bool loading;
   final String? error;
@@ -278,8 +525,22 @@ class ReviewState {
   final Set<String> reviewedIds;
   final bool noCandidates;
   static const _unset = Object();
-  ReviewState copyWith({List<ImmichAsset>? assets, bool? loading, Object? error = _unset, List<ReviewHistoryEntry>? history, Set<String>? reviewedIds, bool? noCandidates}) =>
-      ReviewState(assets: assets ?? this.assets, loading: loading ?? this.loading, error: error == _unset ? this.error : error as String?, history: history ?? this.history, reviewedIds: reviewedIds ?? this.reviewedIds, noCandidates: noCandidates ?? this.noCandidates);
+  ReviewState copyWith({
+    List<ImmichAsset>? assets,
+    bool? loading,
+    Object? error = _unset,
+    List<ReviewHistoryEntry>? history,
+    Set<String>? reviewedIds,
+    bool? noCandidates,
+  }) => ReviewState(
+    assets: assets ?? this.assets,
+    loading: loading ?? this.loading,
+    error: error == _unset ? this.error : error as String?,
+    history: history ?? this.history,
+    reviewedIds: reviewedIds ?? this.reviewedIds,
+    noCandidates: noCandidates ?? this.noCandidates,
+  );
+
   /// Explicitly clears [error] (copyWith(error: null) also works via sentinel).
   ReviewState clearError() => copyWith(error: null);
 }
@@ -293,6 +554,13 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
   static const int _randomMaxAttempts = 20;
 
   Set<String> get reviewedIds => state.reviewedIds;
+
+  /// Drops the current deck/history and cancels in-flight fetches, so a
+  /// different account cannot briefly see the previous user's photos.
+  void reset() {
+    _bumpEpoch();
+    state = ReviewState();
+  }
 
   void _bumpEpoch() => _epoch++;
 
@@ -312,7 +580,9 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
     try {
       final sess = ref.read(sessionProvider).session;
       if (sess != null) {
-        final stored = await ref.read(secureStoreProvider).readReviewed(sess.serverUrl, sess.userName);
+        final stored = await ref
+            .read(secureStoreProvider)
+            .readReviewed(sess.serverUrl, sess.userName);
         if (_epoch != epoch) return;
         state = state.copyWith(reviewedIds: stored);
       }
@@ -335,13 +605,25 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
       List<ImmichAsset> toAdd = [];
       for (int attempt = 0; attempt < _randomMaxAttempts; attempt++) {
         if (_epoch != myEpoch) return;
-        final fetched = await repo.searchRandom(size: 20, imageOnly: skipVideos);
+        final fetched = await repo.searchRandom(
+          size: 20,
+          imageOnly: skipVideos,
+        );
         if (_epoch != myEpoch) return;
         final idsInDeck = state.assets.map((e) => e.id).toSet();
         final alreadyAdded = toAdd.map((e) => e.id).toSet();
-        final filtered = fetched.where((a) => !state.reviewedIds.contains(a.id) && !idsInDeck.contains(a.id) && !alreadyAdded.contains(a.id)).toList();
+        final filtered = fetched
+            .where(
+              (a) =>
+                  !state.reviewedIds.contains(a.id) &&
+                  !idsInDeck.contains(a.id) &&
+                  !alreadyAdded.contains(a.id),
+            )
+            .toList();
         // skipVideos filtering already done server-side via imageOnly, but double-check
-        final usable = skipVideos ? filtered.where((a) => !a.isVideo).toList() : filtered;
+        final usable = skipVideos
+            ? filtered.where((a) => !a.isVideo).toList()
+            : filtered;
         toAdd.addAll(usable);
         if (toAdd.length >= need - existing) {
           toAdd = toAdd.take(need - existing).toList();
@@ -351,7 +633,10 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
       }
       if (_epoch != myEpoch) return;
       if (toAdd.isNotEmpty) {
-        state = state.copyWith(assets: [...state.assets, ...toAdd], noCandidates: false);
+        state = state.copyWith(
+          assets: [...state.assets, ...toAdd],
+          noCandidates: false,
+        );
       } else if (state.assets.isEmpty) {
         // No candidates found after retries — distinct from generic error
         state = state.copyWith(noCandidates: true);
@@ -376,7 +661,10 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
     // optimistic update (no persist yet)
     state = state.copyWith(
       assets: state.assets.sublist(1),
-      history: [...state.history, ReviewHistoryEntry(asset: asset, type: ReviewActionType.keep)],
+      history: [
+        ...state.history,
+        ReviewHistoryEntry(asset: asset, type: ReviewActionType.keep),
+      ],
     );
     ref.read(statsProvider.notifier).incKept();
     // persist after optimistic — rollback on failure to write? reviewed persist is local, assume success
@@ -384,7 +672,11 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
       final sess = ref.read(sessionProvider).session;
       final newSet = {...state.reviewedIds, asset.id};
       state = state.copyWith(reviewedIds: newSet);
-      if (sess != null) await ref.read(secureStoreProvider).addReviewed(sess.serverUrl, sess.userName, asset.id);
+      if (sess != null) {
+        await ref
+            .read(secureStoreProvider)
+            .addReviewed(sess.serverUrl, sess.userName, asset.id);
+      }
     } catch (_) {}
     if (_epoch != epoch) return;
     unawaited(_fetchMore(need: 5, epoch: epoch));
@@ -402,7 +694,14 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
     // optimistic
     state = state.copyWith(
       assets: state.assets.sublist(1),
-      history: [...state.history, ReviewHistoryEntry(asset: asset, type: ReviewActionType.trash, freedBytes: bytes)],
+      history: [
+        ...state.history,
+        ReviewHistoryEntry(
+          asset: asset,
+          type: ReviewActionType.trash,
+          freedBytes: bytes,
+        ),
+      ],
     );
     ref.read(statsProvider.notifier).incTrashed(bytes: bytes);
     try {
@@ -411,18 +710,30 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
       final sess = ref.read(sessionProvider).session;
       final newSet = {...state.reviewedIds, asset.id};
       if (_epoch == epoch) state = state.copyWith(reviewedIds: newSet);
-      if (sess != null) await ref.read(secureStoreProvider).addReviewed(sess.serverUrl, sess.userName, asset.id);
+      if (sess != null) {
+        await ref
+            .read(secureStoreProvider)
+            .addReviewed(sess.serverUrl, sess.userName, asset.id);
+      }
     } on AppException catch (e) {
       await _handleApiError(e);
       if (_epoch == epoch) {
-        state = state.copyWith(assets: snapAssets, history: snapHistory, reviewedIds: snapReviewed);
+        state = state.copyWith(
+          assets: snapAssets,
+          history: snapHistory,
+          reviewedIds: snapReviewed,
+        );
         ref.read(statsProvider.notifier).state = snapStats;
       }
       if (e.statusCode == 401 || e.statusCode == 428) return;
       rethrow;
     } catch (e) {
       if (_epoch == epoch) {
-        state = state.copyWith(assets: snapAssets, history: snapHistory, reviewedIds: snapReviewed);
+        state = state.copyWith(
+          assets: snapAssets,
+          history: snapHistory,
+          reviewedIds: snapReviewed,
+        );
         ref.read(statsProvider.notifier).state = snapStats;
       }
       rethrow;
@@ -434,12 +745,19 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
     if (state.history.isEmpty) return;
     final last = state.history.last;
     final epoch = _epoch;
-    state = state.copyWith(history: state.history.sublist(0, state.history.length - 1), assets: [last.asset, ...state.assets]);
+    state = state.copyWith(
+      history: state.history.sublist(0, state.history.length - 1),
+      assets: [last.asset, ...state.assets],
+    );
     final newSet = Set<String>.from(state.reviewedIds)..remove(last.asset.id);
     state = state.copyWith(reviewedIds: newSet);
     final sess = ref.read(sessionProvider).session;
     if (sess != null) {
-      try { await ref.read(secureStoreProvider).writeReviewed(sess.serverUrl, sess.userName, newSet); } catch (_) {}
+      try {
+        await ref
+            .read(secureStoreProvider)
+            .writeReviewed(sess.serverUrl, sess.userName, newSet);
+      } catch (_) {}
     }
     if (last.type == ReviewActionType.keep) {
       ref.read(statsProvider.notifier).decKept();
@@ -485,9 +803,10 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
       rethrow;
     }
   }
-
 }
 
 void unawaited(Future<void> f) {}
 
-final reviewProvider = StateNotifierProvider<ReviewNotifier, ReviewState>((ref) => ReviewNotifier(ref));
+final reviewProvider = StateNotifierProvider<ReviewNotifier, ReviewState>(
+  (ref) => ReviewNotifier(ref),
+);

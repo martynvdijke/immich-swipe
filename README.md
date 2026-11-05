@@ -111,6 +111,8 @@ Optional runtime variables:
 - `TRMNL_STATS_FILE` — path to persist keep/delete counters (see below)
 - `IMMICH_SESSIONS_DB` — path to a SQLite file that persists login sessions across restarts (see [Session persistence](#session-persistence))
 - `SWIPE_PUBLIC_URL` — external base URL of this instance (e.g. `https://swipe.example.com`); only needed for SSO login behind a reverse proxy when the request-derived callback URL is wrong
+- `LEGAL_*` — operator identity/contact shown on the public legal pages (see [Privacy, legal and Google Play](#privacy-legal-and-google-play))
+- `DEMO_USER_*` — optional public demo login for store review (off by default; see [Demo account for store review](#demo-account-for-store-review))
 
 ### Option D: Trmnl e-ink display (keep/delete stats)
 
@@ -206,6 +208,55 @@ The backend writes every session (token + Immich API key or access token) throug
 ### Option C: SPA-only mode
 
 In SPA-only / GitHub Pages mode (no Go backend), API keys are stored in `localStorage` and the browser calls Immich directly. Credential login requires the Go backend.
+
+## Privacy, legal and Google Play
+
+Immich Swipe ships three **public** pages that load without signing in, so a store reviewer or a prospective user can read them before creating an account:
+
+| Route | Purpose |
+|---|---|
+| `/privacy` | What is stored, why, who processes it, retention, transfers, rights |
+| `/terms` | Account rules, acceptable use, availability, liability |
+| `/account/delete` | How to delete, what is removed, and what stays on Immich |
+
+The pages read their operator identity from `GET /api/legal` (env-only, restart to apply):
+
+```bash
+LEGAL_CONTROLLER_NAME="Example Photo Cooperative"
+LEGAL_CONTACT_EMAIL=privacy@example.com
+LEGAL_CONTACT_ADDRESS="1 Example Street, 1000 AA Amsterdam"
+LEGAL_HOSTING_REGION="the Netherlands"
+```
+
+With no configuration the pages still render, using neutral fallbacks. Set these before an EU launch or a Play submission — see [`docs/legal.md`](docs/legal.md) for the GDPR checklist.
+
+### Account export and deletion
+
+Signed-in users can open **Settings → Account** to:
+
+- **Export my data** — `GET /api/auth/account/export` returns a JSON copy of the app-local account (user name, optional email, account creation time, whether a password/API key is set), keep/delete counters, and non-secret session metadata. It contains **no Immich secrets and no photo data**.
+- **Delete my account** — `DELETE /api/auth/account` requires typing the user name to confirm. It removes the local account row (user name, email, password hash, Immich API key), all Swipe sessions and access tokens for that account, and its keep/delete counters. Immich access tokens are revoked best-effort first; API keys cannot be revoked without their Immich-side id, so revoke those in Immich.
+
+Deletion does **not** delete the user's Immich account, albums, or photos. Those stay on the Immich server, which Swipe only proxies. The deletion page tells the user how to remove the account and revoke the API key in Immich itself.
+
+### Demo account for store review
+
+For Google Play / App Store review, an operator can enable a public demo login:
+
+```bash
+DEMO_USER_ENABLED=true
+DEMO_USER_NAME=demo
+DEMO_USER_PASSWORD=demo
+DEMO_USER_API_KEY=<api key of a dedicated Immich user>
+# DEMO_USER_SERVER_URL=http://immich.home:2283   # default: IMMICH_SERVER_URL
+# DEMO_USER_EMAIL=demo@example.com
+```
+
+When enabled, `GET /api/auth/config` exposes `demoEnabled`, `demoUserName`, `demoPassword` and `demoServerUrl` so the login page can offer the credentials, and the reviewer can sign in without an account.
+
+> **Security:** enabling the demo publishes its user name **and password** to anyone who can reach the instance. Use a dedicated Immich user with a non-sensitive library and its own API key — never a personal or admin key — and disable the demo after review.
+
+The Android app is a client to a self-hosted or hosted backend: the **operator** of that deployment is responsible for its privacy policy, data-safety answers, and legal compliance. See [`docs/play-store.md`](docs/play-store.md).
 
 ## Observability (Settings)
 
