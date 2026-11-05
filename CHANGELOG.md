@@ -1,3 +1,10 @@
+# [1.17.0](https://github.com/martynvdijke/immich-swipe/compare/v1.16.5...v1.17.0) (2026-11-05)
+
+
+### Features
+
+* add Android SSO, demo account, and GDPR privacy controls ([b38bf10](https://github.com/martynvdijke/immich-swipe/commit/b38bf108b14e30ac4adeb0c0df1b0cb29146f087))
+
 ## [1.16.5](https://github.com/martynvdijke/immich-swipe/compare/v1.16.4...v1.16.5) (2026-11-05)
 
 ## [1.16.4](https://github.com/martynvdijke/immich-swipe/compare/v1.16.3...v1.16.4) (2026-11-03)
