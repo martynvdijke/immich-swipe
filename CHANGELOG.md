@@ -1,3 +1,10 @@
+# [1.19.0](https://github.com/martynvdijke/immich-swipe/compare/v1.18.0...v1.19.0) (2026-11-08)
+
+
+### Features
+
+* **mobile:** add OpenTelemetry tracing with runtime endpoint from API ([f3c0052](https://github.com/martynvdijke/immich-swipe/commit/f3c005204764b5df957dab2dacdb3df71efae30e))
+
 # [1.18.0](https://github.com/martynvdijke/immich-swipe/compare/v1.17.0...v1.18.0) (2026-11-08)
 
 
