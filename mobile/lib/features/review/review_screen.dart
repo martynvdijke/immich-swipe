@@ -538,6 +538,54 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
             // Ensure no overflow at 320dp: card width is constrained.
             final maxDeckWidth = constraints.maxWidth > 520 ? 520.0 : constraints.maxWidth;
             return Column(children: [
+              // Top action bar — touch-first: Undo / Favorite / Info. No desktop Keep/Delete.
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                decoration: BoxDecoration(
+                  color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: scheme.outlineVariant.withValues(alpha: isDark ? 0.15 : 0.4)),
+                  boxShadow: isDark
+                      ? []
+                      : [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 16, offset: const Offset(0, 8))],
+                ),
+                child: Row(children: [
+                  Expanded(
+                    child: _actionBtn(
+                      context,
+                      icon: Icons.undo_rounded,
+                      label: 'Undo',
+                      enabled: review.history.isNotEmpty,
+                      onTap: () async {
+                        if (review.history.isEmpty) return;
+                        HapticFeedback.selectionClick();
+                        await ref.read(reviewProvider.notifier).undo();
+                        HapticFeedback.lightImpact();
+                      },
+                      isDark: isDark,
+                      scheme: scheme,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _favoriteAction(context, review.assets.first, isDark, scheme),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _actionBtn(
+                      context,
+                      icon: Icons.info_outline_rounded,
+                      label: 'Info',
+                      enabled: true,
+                      onTap: () => _showExif(review.assets.first),
+                      isDark: isDark,
+                      scheme: scheme,
+                      filled: false,
+                    ),
+                  ),
+                ]),
+              ),
+              const SizedBox(height: 12),
               StatsBar(kept: stats.kept, trashed: stats.trashed, freedBytes: stats.freedBytes),
               const SizedBox(height: 12),
               Expanded(
@@ -582,77 +630,78 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                       onUndo: (prevIdx, currIdx, dir) => true,
                       cardBuilder: (context, index, hPercent, vPercent) {
                         final a = review.assets[index];
-                        // subtle rotation tied to swipe progress for peek card
-                        final isTop = index == 0;
-                        final rotate = isTop ? 0.0 : (hPercent * 0.04);
-                        return Transform.rotate(
-                          angle: rotate,
-                          child: Stack(children: [
-                            GestureDetector(
-                              onTap: a.isVideo ? () => _toggleVideo(a.id) : null,
-                              child: SwipeCard(
-                                asset: a,
-                                imageBytes: _thumbCache[a.id],
-                                videoController: _videoControllers[a.id],
-                                videoLoading: _pendingVideo.contains(a.id),
-                                onFavoriteToggle: () => ref.read(reviewProvider.notifier).toggleFavorite(a.id),
-                                onInfo: () => _showExif(a),
-                              ),
+                        // The package already tilts the front card (maxAngle), so no
+                        // manual rotation here: an extra Transform.rotate on the card
+                        // it treats as "back" spun the deck (~229°) mid-swipe.
+                        // The package reports (0, 0) progress for every back card and
+                        // non-zero progress only while the front card is dragged, so
+                        // drag state — not the index — decides where the overlay goes.
+                        final dragging = hPercent != 0 || vPercent != 0;
+                        return Stack(children: [
+                          GestureDetector(
+                            onTap: a.isVideo ? () => _toggleVideo(a.id) : null,
+                            child: SwipeCard(
+                              asset: a,
+                              imageBytes: _thumbCache[a.id],
+                              videoController: _videoControllers[a.id],
+                              videoLoading: _pendingVideo.contains(a.id),
+                              onFavoriteToggle: () => ref.read(reviewProvider.notifier).toggleFavorite(a.id),
+                              onInfo: () => _showExif(a),
                             ),
-                            // swipe hint overlay (peeks as you drag top card: show on top card via builder progress)
-                            if (isTop)
-                              Positioned.fill(
-                                child: IgnorePointer(
-                                  child: AnimatedOpacity(
-                                    opacity: (hPercent.abs() / 100).clamp(0, 1) * 0.9,
-                                    duration: const Duration(milliseconds: 60),
+                          ),
+                          // swipe hint overlay (peeks as you drag top card: show on top card via builder progress)
+                          if (dragging)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: AnimatedOpacity(
+                                  opacity: (hPercent.abs() / 100).clamp(0, 1) * 0.9,
+                                  duration: const Duration(milliseconds: 60),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(24),
+                                      border: Border.all(
+                                        color: hPercent > 0
+                                            ? const Color(0xFF10B981).withValues(alpha: 0.8)
+                                            : const Color(0xFFEF4444).withValues(alpha: 0.8),
+                                        width: 3,
+                                      ),
+                                      color: (hPercent > 0 ? const Color(0xFF10B981) : const Color(0xFFEF4444))
+                                          .withValues(alpha: 0.08),
+                                    ),
+                                    alignment: hPercent > 0 ? Alignment.centerLeft : Alignment.centerRight,
+                                    padding: const EdgeInsets.symmetric(horizontal: 20),
                                     child: Container(
+                                      padding:
+                                          const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                                       decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(24),
-                                        border: Border.all(
-                                          color: hPercent > 0
-                                              ? const Color(0xFF10B981).withValues(alpha: 0.8)
-                                              : const Color(0xFFEF4444).withValues(alpha: 0.8),
-                                          width: 3,
-                                        ),
-                                        color: (hPercent > 0 ? const Color(0xFF10B981) : const Color(0xFFEF4444))
-                                            .withValues(alpha: 0.08),
+                                        color: hPercent > 0 ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                                        borderRadius: BorderRadius.circular(12),
+                                        boxShadow: [
+                                          BoxShadow(
+                                              color: Colors.black.withValues(alpha: 0.2),
+                                              blurRadius: 10,
+                                              offset: const Offset(0, 4))
+                                        ],
                                       ),
-                                      alignment: hPercent > 0 ? Alignment.centerLeft : Alignment.centerRight,
-                                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                                      child: Container(
-                                        padding:
-                                            const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                        decoration: BoxDecoration(
-                                          color: hPercent > 0 ? const Color(0xFF10B981) : const Color(0xFFEF4444),
-                                          borderRadius: BorderRadius.circular(12),
-                                          boxShadow: [
-                                            BoxShadow(
-                                                color: Colors.black.withValues(alpha: 0.2),
-                                                blurRadius: 10,
-                                                offset: const Offset(0, 4))
-                                          ],
-                                        ),
-                                        child: Row(mainAxisSize: MainAxisSize.min, children: [
-                                          Icon(
-                                              hPercent > 0 ? Icons.check_rounded : Icons.delete_rounded,
-                                              color: Colors.white,
-                                              size: 18),
-                                          const SizedBox(width: 6),
-                                          Text(hPercent > 0 ? 'KEEP' : 'TRASH',
-                                              style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontWeight: FontWeight.w900,
-                                                  fontSize: 13,
-                                                  letterSpacing: 0.6)),
-                                        ]),
-                                      ),
+                                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                                        Icon(
+                                            hPercent > 0 ? Icons.check_rounded : Icons.delete_rounded,
+                                            color: Colors.white,
+                                            size: 18),
+                                        const SizedBox(width: 6),
+                                        Text(hPercent > 0 ? 'KEEP' : 'TRASH',
+                                            style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.w900,
+                                                fontSize: 13,
+                                                letterSpacing: 0.6)),
+                                      ]),
                                     ),
                                   ),
                                 ),
                               ),
-                          ]),
-                        );
+                            ),
+                        ]);
                       },
                     ),
                   ),
@@ -705,54 +754,6 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                       ),
                 loading: () => const SizedBox.shrink(),
                 error: (_, _) => const SizedBox.shrink(),
-              ),
-              const SizedBox(height: 12),
-              // Bottom action bar — touch-first: Undo / Favorite / Info. No desktop Keep/Delete.
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-                decoration: BoxDecoration(
-                  color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: scheme.outlineVariant.withValues(alpha: isDark ? 0.15 : 0.4)),
-                  boxShadow: isDark
-                      ? []
-                      : [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 16, offset: const Offset(0, 8))],
-                ),
-                child: Row(children: [
-                  Expanded(
-                    child: _actionBtn(
-                      context,
-                      icon: Icons.undo_rounded,
-                      label: 'Undo',
-                      enabled: review.history.isNotEmpty,
-                      onTap: () async {
-                        if (review.history.isEmpty) return;
-                        HapticFeedback.selectionClick();
-                        await ref.read(reviewProvider.notifier).undo();
-                        HapticFeedback.lightImpact();
-                      },
-                      isDark: isDark,
-                      scheme: scheme,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _favoriteAction(context, review.assets.first, isDark, scheme),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _actionBtn(
-                      context,
-                      icon: Icons.info_outline_rounded,
-                      label: 'Info',
-                      enabled: true,
-                      onTap: () => _showExif(review.assets.first),
-                      isDark: isDark,
-                      scheme: scheme,
-                      filled: false,
-                    ),
-                  ),
-                ]),
               ),
               if (review.error != null)
                 Padding(

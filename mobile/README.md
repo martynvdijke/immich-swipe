@@ -172,3 +172,56 @@ and are unit-tested without a platform WebView.
 ## Tests
 
 See `test/` — pure logic + widget tests with faked repositories / overridden providers, no network or Android SDK needed.
+
+
+## Telemetry (OpenTelemetry)
+
+Traces, metrics and logs are exported via OTLP/HTTP (protobuf) using
+`dartastic_opentelemetry` (`lib/core/telemetry.dart`). **Telemetry is off by
+default and a complete no-op** unless a collector endpoint is supplied at build
+time: `OTel.initialize()` would otherwise default to `http://localhost:4318`,
+which is noise in a released app.
+
+Enable it with compile-time defines:
+
+```
+flutter run \
+  --dart-define=OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com:4318 \
+  --dart-define=OTEL_SERVICE_NAME=immich-swipe-mobile \
+  --dart-define=OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer%20token
+```
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` — **base** collector URL; the SDK appends
+  `/v1/traces`, `/v1/metrics` and `/v1/logs`. When empty, nothing is
+  initialized and every helper returns immediately.
+- `OTEL_SERVICE_NAME` — defaults to `immich-swipe-mobile`.
+- `OTEL_EXPORTER_OTLP_HEADERS` — optional `key=value,key2=value2`; values may be
+  percent-encoded (e.g. `Bearer%20token`). Use it for auth tokens.
+
+### What is emitted
+
+- **Traces** — one CLIENT span per HTTP call named `<METHOD> <path>` with
+  `http.request.method`, `url.full`, `url.path`, `server.address` and
+  `http.response.status_code`; the W3C `traceparent` header is injected into
+  outgoing requests so backend traces link up. Errors record the exception and
+  set `Error` status.
+- **Metrics**
+  - `immich_swipe_swipes_total` (`action` = `keep`|`trash`)
+  - `immich_swipe_album_adds_total`
+  - `immich_swipe_undo_total`
+  - `immich_swipe_http_requests_total` (`http.request.method`,
+    `http.response.status_code`)
+  - `immich_swipe_errors_total` (`error.type`)
+  - `immich_swipe_http_request_duration_ms` (histogram, `ms`)
+- **Logs** — INFO/WARN/ERROR records via `Telemetry.logInfo/logWarn/logError`;
+  errors carry `exception.type`, `exception.message` and
+  `exception.stacktrace`.
+
+Pending data is flushed when the app is paused/detached (batch exporters are
+timer-driven and those timers do not fire in the background). A telemetry
+failure never breaks startup, auth or the review flow.
+
+> **Plaintext collectors:** an `http://` collector URL needs cleartext traffic
+> allowed on Android (`android:usesCleartextTraffic="true"` in
+> `AndroidManifest.xml`, or a network-security-config exception). Use `https://`
+> in production.

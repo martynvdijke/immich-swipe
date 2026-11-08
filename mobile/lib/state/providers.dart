@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 
 import '../core/api_client.dart';
 import '../core/secure_store.dart';
+import '../core/telemetry.dart';
 import '../data/auth_repository.dart';
 import '../data/asset_repository.dart';
 import '../data/album_repository.dart';
@@ -667,6 +668,7 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
       ],
     );
     ref.read(statsProvider.notifier).incKept();
+    Telemetry.countSwipe('keep');
     // persist after optimistic — rollback on failure to write? reviewed persist is local, assume success
     try {
       final sess = ref.read(sessionProvider).session;
@@ -704,6 +706,7 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
       ],
     );
     ref.read(statsProvider.notifier).incTrashed(bytes: bytes);
+    Telemetry.countSwipe('trash');
     try {
       await ref.read(assetRepositoryProvider).trash(asset.id);
       // persist reviewed only after successful trash
@@ -726,6 +729,7 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
         ref.read(statsProvider.notifier).state = snapStats;
       }
       if (e.statusCode == 401 || e.statusCode == 428) return;
+      Telemetry.countError('trash_failed');
       rethrow;
     } catch (e) {
       if (_epoch == epoch) {
@@ -736,6 +740,7 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
         );
         ref.read(statsProvider.notifier).state = snapStats;
       }
+      Telemetry.countError('trash_failed');
       rethrow;
     }
     if (_epoch == epoch) unawaited(_fetchMore(need: 5, epoch: epoch));
@@ -743,6 +748,7 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
 
   Future<void> undo() async {
     if (state.history.isEmpty) return;
+    Telemetry.countUndo();
     final last = state.history.last;
     final epoch = _epoch;
     state = state.copyWith(
@@ -796,10 +802,19 @@ class ReviewNotifier extends StateNotifier<ReviewState> {
 
   Future<void> addToAlbum(String albumId, String assetId) async {
     try {
-      await ref.read(albumRepositoryProvider).addToAlbum(albumId, assetId);
+      await Telemetry.traceAsync(
+        'album.add',
+        () => ref.read(albumRepositoryProvider).addToAlbum(albumId, assetId),
+        attributes: {'album.id': albumId},
+      );
+      Telemetry.countAlbumAdd();
     } on AppException catch (e) {
       await _handleApiError(e);
       if (e.statusCode == 401 || e.statusCode == 428) return;
+      Telemetry.countError('album_add_failed');
+      rethrow;
+    } catch (_) {
+      Telemetry.countError('album_add_failed');
       rethrow;
     }
   }
