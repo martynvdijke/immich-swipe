@@ -4,7 +4,7 @@ import 'package:dio/dio.dart';
 
 import '../core/api_client.dart';
 import '../core/secure_store.dart';
-import '../core/telemetry.dart';
+import '../src/telemetry/telemetry.dart';
 import '../data/auth_repository.dart';
 import '../data/asset_repository.dart';
 import '../data/album_repository.dart';

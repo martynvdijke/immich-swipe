@@ -626,6 +626,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case path == "/api/legal":
 		s.legalConfigHandler(w, r)
 
+	case path == "/api/otel-settings":
+		// Public: the mobile app reads the collector endpoint before login.
+		s.otelSettingsHandler(w, r)
+
 	case path == "/api/trmnl/stats":
 		// Public Trmnl e-ink polling endpoint. Registered before the /api/
 		// proxy catch-all so it is served locally and never proxied to Immich.

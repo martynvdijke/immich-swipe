@@ -1,6 +1,6 @@
 import 'package:dio/dio.dart';
 
-import 'telemetry.dart';
+import '../src/telemetry/telemetry.dart';
 
 /// Dio client configured for the immich-swipe Go backend.
 /// Base URL is `<serverUrl>/api` and every request carries
