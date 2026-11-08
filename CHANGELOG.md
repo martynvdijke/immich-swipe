@@ -1,3 +1,10 @@
+# [1.18.0](https://github.com/martynvdijke/immich-swipe/compare/v1.17.0...v1.18.0) (2026-11-08)
+
+
+### Features
+
+* **mobile:** fix swipe rotation, move action bar to top, add OpenTelemetry ([09ecb5b](https://github.com/martynvdijke/immich-swipe/commit/09ecb5b942739a8037778b4395128f2a9c6698e7))
+
 # [1.17.0](https://github.com/martynvdijke/immich-swipe/compare/v1.16.5...v1.17.0) (2026-11-05)
 
 
