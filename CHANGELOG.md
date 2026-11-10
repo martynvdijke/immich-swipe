@@ -1,3 +1,10 @@
+## [1.19.1](https://github.com/martynvdijke/immich-swipe/compare/v1.19.0...v1.19.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **renovate:** disable platform automerge so Renovate merges green PRs itself ([cd51444](https://github.com/martynvdijke/immich-swipe/commit/cd514449f735a879d4e909fdb021e020e0baa030))
+
 # [1.19.0](https://github.com/martynvdijke/immich-swipe/compare/v1.18.0...v1.19.0) (2026-11-08)
 
 
