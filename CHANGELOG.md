@@ -1,3 +1,10 @@
+## [1.19.10](https://github.com/martynvdijke/immich-swipe/compare/v1.19.9...v1.19.10) (2026-11-22)
+
+
+### Bug Fixes
+
+* **deps:** update all non-major dependencies ([#98](https://github.com/martynvdijke/immich-swipe/issues/98)) ([cd862e5](https://github.com/martynvdijke/immich-swipe/commit/cd862e55db8a537a1cc0dd9a938211da9be3f4b9))
+
 ## [1.19.9](https://github.com/martynvdijke/immich-swipe/compare/v1.19.8...v1.19.9) (2026-11-20)
 
 ## [1.19.8](https://github.com/martynvdijke/immich-swipe/compare/v1.19.7...v1.19.8) (2026-11-18)
